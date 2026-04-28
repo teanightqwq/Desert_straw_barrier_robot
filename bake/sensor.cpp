@@ -1,59 +1,5 @@
-#include <Arduino.h>
-
-static const size_t LOADER_SENSOR_COUNT = 4;
-
-// Loader Sensor
-// Sensor 1: GPIO10.
-// Other loader pins are TBD until hardware mapping is finalized.
-static const int LOADER_PIN_1 = 10;
-static const int LOADER_PIN_2 = -1; // TBD
-static const int LOADER_PIN_3 = -1; // TBD
-static const int LOADER_PIN_4 = -1; // TBD
-
-// 5th sensor between feeder and wedger.
-static const int WEDGER_SENSOR_PIN = -1; // TBD
-
-static const int LOADER_PINS[LOADER_SENSOR_COUNT] = {
-    LOADER_PIN_1,
-    LOADER_PIN_2,
-    LOADER_PIN_3,
-    LOADER_PIN_4,
-};
-
-// Preset Value 预设值
-static const uint32_t PRINT_PERIOD_MS = 100;    // Time between print 检测间隔时间值
-static const uint32_t SAMPLE_INTERVAL_MS = 5;
-static const uint32_t CALIBRATION_MS = 1500;
-static const uint32_t CALIBRATION_INTERVAL_MS = 5;
-static const uint32_t ERROR_HOLD_MS = 2500;
-static const uint32_t CLEAR_HOLD_MS = 1000;
-static const uint32_t FEED_PROCESS_TIME_MS = 18000; // Feeding total time 总运输时间
-static const uint32_t FLOW_WARNING_REPEAT_MS = 2000;
-
-static const int NEAR_THRESHOLD = 300;
-static const int FAR_THRESHOLD_MIN = 400;
-static const int FAR_THRESHOLD_MAX = 700;
-static const int FAR_THRESHOLD_DEFAULT = 550;
-static const float FAR_THRESHOLD_SCALE = 0.85f;
-
-// After feed_process_time, wedger_raw < WEDGER_THRESHOLD means warning but keep running.
-static const int WEDGER_THRESHOLD = 300;
-
-static const float ADC_FULL_SCALE_V = 3.3f;
-
-enum SensorGroup {
-  GROUP_NEAR,
-  GROUP_FAR,
-  GROUP_UNKNOWN,
-};
-
-enum WorkStatus {
-  STATUS_ON_WORK,
-  STATUS_WARNING_WORK,
-  STATUS_E_STOP,
-  STATUS_END,
-  STATUS_NOT_START,
-};
+#include "sensor.h"
+#include "warning.h"
 
 struct LoaderSensorState {
   int pin;
@@ -75,10 +21,10 @@ LoaderSensorState loaderSensors[LOADER_SENSOR_COUNT] = {
 };
 
 WorkStatus workStatus = STATUS_NOT_START;
-bool flowWarningActive = false;
 uint32_t loaderAllClearStartMs = 0;
-uint32_t lastFlowWarningMs = 0;
 int wedgerRaw = 0;
+
+static WarnStatusGroup g_warn_group = {};
 
 bool hasValidPin(int pin) {
   return pin >= 0;
@@ -98,18 +44,127 @@ const char* groupName(SensorGroup group) {
   return "UNKNOWN";
 }
 
-const char* workStatusName(WorkStatus status) {
+WarningType warning_main_type(WarningType type) {
+  // Classify subtype back to main type; handle misclassifications
+  if (type == WARNING_DISPLACED_BALE || type == WARNING_BROKEN_BALE ||
+      type == WARNING_SENSOR_STATUS) {
+    return WARNING_MAIN_LOADER;
+  }
+  if (type == WARNING_FEED_TIMEOUT) {
+    return WARNING_MAIN_FLOW;
+  }
+  // If a main type is passed directly, return it as-is
+  if (type == WARNING_MAIN_LOADER || type == WARNING_MAIN_FLOW) {
+    return type;
+  }
+  // WARNING_NONE -> treat as UNDEFINED in MAIN_LOADER scope
+  if (type == WARNING_NONE) {
+    return WARNING_MAIN_LOADER;
+  }
+  // Already a placeholder (UNDEFINED, NO_SUB) -> return as-is
+  return type;
+}
+
+bool warning_is_main_type(WarningType type) {
+  return type == WARNING_MAIN_LOADER || type == WARNING_MAIN_FLOW;
+}
+
+bool warning_is_loader_subtype(WarningType type) {
+  return type == WARNING_DISPLACED_BALE || type == WARNING_BROKEN_BALE ||
+         type == WARNING_SENSOR_STATUS;
+}
+
+bool warning_is_flow_subtype(WarningType type) {
+  return type == WARNING_FEED_TIMEOUT;
+}
+
+const char* warning_type_name(WarningType type) {
+  switch (type) {
+    case WARNING_NONE:
+      return "none";
+    case WARNING_MAIN_LOADER:
+      return "main_loader";
+    case WARNING_MAIN_FLOW:
+      return "main_flow";
+    case WARNING_UNDEFINED:
+      return "undefined";
+    case WARNING_NO_SUB:
+      return "no_sub";
+    case WARNING_DISPLACED_BALE:
+      return "displaced_bale";
+    case WARNING_BROKEN_BALE:
+      return "broken_bale";
+    case WARNING_SENSOR_STATUS:
+      return "sensor_status";
+    case WARNING_FEED_TIMEOUT:
+      return "feed_timeout";
+  }
+  return "unknown";
+}
+
+const WarnStatusGroup* get_warn_status_group() {
+  return &g_warn_group;
+}
+
+bool has_warn_status(WarningType type) {
+  for (size_t i = 0; i < g_warn_group.count; ++i) {
+    if (!g_warn_group.items[i].active) {
+      continue;
+    }
+    if (warning_is_main_type(type)) {
+      if (g_warn_group.items[i].mainType == type) {
+        return true;
+      }
+    } else if (g_warn_group.items[i].type == type) {
+      return true;
+    }
+  }
+  return false;
+}
+
+WarnStatus* find_warn_status(WarningType type) {
+  for (size_t i = 0; i < g_warn_group.count; ++i) {
+    if (g_warn_group.items[i].active && g_warn_group.items[i].type == type) {
+      return &g_warn_group.items[i];
+    }
+  }
+  return nullptr;
+}
+
+WarnStatus* alloc_warn_status(WarningType type) {
+  WarnStatus* existing = find_warn_status(type);
+  if (existing != nullptr) {
+    return existing;
+  }
+
+  if (g_warn_group.count >= WARN_STATUS_CAPACITY) {
+    return nullptr;
+  }
+
+  WarnStatus* slot = &g_warn_group.items[g_warn_group.count++];
+  slot->type = type;
+  slot->mainType = warning_main_type(type);
+  slot->severity = SEVERITY_INFO;
+  slot->prevWorkStatus = workStatus;
+  slot->startMs = 0;
+  slot->lastLogMs = 0;
+  slot->message = nullptr;
+  slot->active = true;
+  return slot;
+}
+
+const char* sensors_work_status_name(WorkStatus status) {
   if (status == STATUS_ON_WORK) {
     return "on_work";
-  }
-  if (status == STATUS_WARNING_WORK) {
-    return "warning_work";
   }
   if (status == STATUS_E_STOP) {
     return "e_stop";
   }
   if (status == STATUS_END) {
     return "end";
+  }
+  if (status == STATUS_END_DETECTION) {
+    return "end_detection";
   }
   return "not_start";
 }
@@ -121,13 +176,112 @@ void setWorkStatus(WorkStatus next, const char* reason) {
 
   workStatus = next;
   Serial.print("[STATUS] ");
-  Serial.print(workStatusName(workStatus));
+  Serial.print(sensors_work_status_name(workStatus));
   if (reason != nullptr) {
     Serial.print(" | ");
     Serial.println(reason);
   } else {
     Serial.println();
   }
+}
+
+WorkStatus sensors_get_work_status() {
+  return workStatus;
+}
+
+void log_warn_status(const char* action, const WarnStatus& warn) {
+  Serial.print("[WARN_STATUS] ");
+  Serial.print(action);
+  Serial.print(" type=");
+  Serial.print(warning_type_name(warn.type));
+  Serial.print(" main=");
+  Serial.print(warning_type_name(warn.mainType));
+  Serial.print(" sev=");
+  Serial.print((int)warn.severity);
+  Serial.print(" prev=");
+  Serial.print(sensors_work_status_name(warn.prevWorkStatus));
+  if (warn.message != nullptr) {
+    Serial.print(" msg=");
+    Serial.print(warn.message);
+  }
+  Serial.println();
+}
+
+void set_warn_status(WarningType type, WarningSeverity severity, const char* message) {
+  uint32_t now = millis();
+  WarnStatus* warn = alloc_warn_status(type);
+  if (warn == nullptr) {
+    Serial.print("[WARN_STATUS] drop type=");
+    Serial.print(warning_type_name(type));
+    Serial.println(" | warning group full");
+    return;
+  }
+
+  bool isNew = warn->startMs == 0;
+  bool changed = !isNew && (warn->severity != severity || warn->message != message);
+  warn->mainType = warning_main_type(type);
+  warn->severity = severity;
+  warn->prevWorkStatus = workStatus;
+  if (isNew) {
+    warn->startMs = now;
+  }
+  warn->message = message;
+  warn->active = true;
+
+  if (isNew || changed || (now - warn->lastLogMs >= WARN_LOG_REPEAT_MS)) {
+    warn->lastLogMs = now;
+    log_warn_status(isNew ? "set" : "update", *warn);
+  }
+}
+
+void clear_warn_status(WarningType type, const char* reason) {
+  size_t i = 0;
+  while (i < g_warn_group.count) {
+    WarnStatus* warn = &g_warn_group.items[i];
+    if (!warn->active) {
+      ++i;
+      continue;
+    }
+    bool match = warning_is_main_type(type) ? (warn->mainType == type) : (warn->type == type);
+    if (!match) {
+      ++i;
+      continue;
+    }
+    log_warn_status("clear", *warn);
+    if (reason != nullptr) {
+      Serial.print("[WARN_STATUS] reason=");
+      Serial.println(reason);
+    }
+    *warn = g_warn_group.items[g_warn_group.count - 1];
+    g_warn_group.count -= 1;
+  }
+}
+
+void clear_all_warn_status(const char* reason) {
+  if (g_warn_group.count == 0) {
+    return;
+  }
+  if (reason != nullptr) {
+    Serial.print("[WARN_STATUS] clear_all reason=");
+    Serial.println(reason);
+  }
+  for (size_t i = 0; i < g_warn_group.count; ++i) {
+    log_warn_status("clear", g_warn_group.items[i]);
+  }
+  g_warn_group.count = 0;
+}
+
+// Skeleton warning handlers (TODO: implement these when design is finalized)
+void handle_displaced_bale_warning() {
+  return;
+}
+
+void handle_broken_bale_warning() {
+  return;
+}
+
+void handle_sensor_status_warning() {
+  return;
 }
 
 bool anyLoaderWarningActive() {
@@ -151,6 +305,22 @@ bool anyLoaderHasStraw() {
   return false;
 }
 
+/* 
+### function bool allLoaderNoStraw ###
+
+# Check if all Loader Sensors detect no straws
+# params: none
+# return: 
+#       → false: one of the sensor have LoaderSensorState.raw lower than its set of threshold
+#       → true: otherwise (if all sensors have LoaderSensorState.raw higher than its set of threshold)
+
+* 检查Loader区域的红外传感器是否都检测到无干草
+* 参数: 无
+* 返回值:
+*       → false: 其中一个传感器的LoaderSensorState.raw低于其设定threshold值
+*       → true: 所有传感器的LoaderSensorState.raw皆高于其设定threshold值
+
+*/
 bool allLoaderNoStraw() {
   bool hasEnabled = false;
   for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
@@ -367,12 +537,15 @@ void updateWedgerSensor() {
   wedgerRaw = analogRead(WEDGER_SENSOR_PIN);
 }
 
-void warnFlowIfNeeded(uint32_t now, const char* message) {
-  if (lastFlowWarningMs == 0 || now - lastFlowWarningMs >= FLOW_WARNING_REPEAT_MS) {
-    Serial.print("[WARN] ");
-    Serial.println(message);
-    lastFlowWarningMs = now;
-  }
+void resetFlowTracking() {
+  loaderAllClearStartMs = 0;
+  clear_warn_status(WARNING_MAIN_FLOW, "flow reset");
+  clear_warn_status(WARNING_FEED_TIMEOUT, "flow reset");
+}
+
+bool isFlowTransitionStatus(WorkStatus status) {
+  (void)status;
+  return has_warn_status(WARNING_MAIN_FLOW);
 }
 
 void processWorkFlow(uint32_t now) {
@@ -388,38 +561,58 @@ void processWorkFlow(uint32_t now) {
     }
   }
 
+  bool hasStrawAtLoader = anyLoaderHasStraw();
   bool noStrawAtLoader = allLoaderNoStraw();
-  if (noStrawAtLoader) {
-    if (loaderAllClearStartMs == 0) {
-      loaderAllClearStartMs = now;
-      Serial.println("[FLOW] Loader sensors all clear. Start feeder timer.");
-    }
-  } else {
-    if (loaderAllClearStartMs != 0) {
-      loaderAllClearStartMs = 0;
-      flowWarningActive = false;
-      Serial.println("[FLOW] Straw returned at loader. Feeder timer reset.");
+
+  if (hasStrawAtLoader) {
+    if (loaderAllClearStartMs != 0 || isFlowTransitionStatus(workStatus)) {
+      resetFlowTracking();
+      setWorkStatus(STATUS_ON_WORK, "[FLOW] Straw returned at loader. Detection timer reset.");
     }
     return;
   }
 
-  if (loaderAllClearStartMs == 0 ||
-      now - loaderAllClearStartMs < FEED_PROCESS_TIME_MS) {
-    flowWarningActive = false;
+  if (!noStrawAtLoader) {
+    return;
+  }
+
+  if (loaderAllClearStartMs == 0) {
+    loaderAllClearStartMs = now;
+    set_warn_status(WARNING_MAIN_FLOW, SEVERITY_NORMAL, "[FLOW] Loader sensors clear for >2s. Detecting possible warning.");
+    return;
+  }
+
+  uint32_t noStrawElapsed = now - loaderAllClearStartMs;
+
+  if (noStrawElapsed >= FLOW_END_WARNING_HOLD_MS && !has_warn_status(WARNING_MAIN_FLOW) &&
+      workStatus != STATUS_END_DETECTION) {
+    set_warn_status(WARNING_MAIN_FLOW, SEVERITY_NORMAL, "[FLOW] Loader sensors clear for >2s. Detecting possible warning.");
+  }
+
+  if (noStrawElapsed >= FLOW_END_DETECTION_HOLD_MS && workStatus != STATUS_END_DETECTION) {
+    setWorkStatus(STATUS_END_DETECTION,
+                  "[FLOW] Loader sensors clear for >5s. Start End Detection and clear error.");
+  }
+
+  if (noStrawElapsed < FEED_PROCESS_TIME_MS) {
     return;
   }
 
   if (!wedgerEnabled()) {
-    flowWarningActive = true;
-    warnFlowIfNeeded(now, "Wedger sensor pin is TBD; cannot verify feed completion.");
+    if (!has_warn_status(WARNING_FEED_TIMEOUT)) {
+      set_warn_status(WARNING_FEED_TIMEOUT, SEVERITY_IMPORTANT,
+                      "Feeder timeout reached, wedger sensor still < threshold.");
+    }
     return;
   }
 
   if (wedgerRaw < WEDGER_THRESHOLD) {
-    flowWarningActive = true;
-    warnFlowIfNeeded(now, "Feeder timeout reached, wedger sensor still < threshold.");
+    if (!has_warn_status(WARNING_FEED_TIMEOUT)) {
+      set_warn_status(WARNING_FEED_TIMEOUT, SEVERITY_IMPORTANT,
+                      "Feeder timeout reached, wedger sensor still < threshold.");
+    }
   } else {
-    flowWarningActive = false;
+    resetFlowTracking();
     setWorkStatus(STATUS_END, "Feed process completed and wedger check passed.");
   }
 }
@@ -431,15 +624,16 @@ void refreshWorkStatusByWarnings() {
   }
 
   bool loaderWarn = anyLoaderWarningActive();
-  bool hasWarning = loaderWarn || flowWarningActive;
 
-  if (hasWarning) {
-    if (flowWarningActive) {
-      setWorkStatus(STATUS_WARNING_WORK, "Flow warning active, system keeps running.");
-    } else {
-      setWorkStatus(STATUS_WARNING_WORK, "Loader warning active, system keeps running.");
+  if (loaderWarn) {
+    if (!has_warn_status(WARNING_MAIN_LOADER)) {
+      set_warn_status(WARNING_MAIN_LOADER, SEVERITY_NORMAL, "Loader warning active, system keeps running.");
     }
   } else {
+    clear_warn_status(WARNING_MAIN_LOADER, "Loader warnings cleared.");
+  }
+
+  if (workStatus != STATUS_ON_WORK && g_warn_group.count == 0) {
     setWorkStatus(STATUS_ON_WORK, "Warnings cleared.");
   }
 }
@@ -452,7 +646,32 @@ void printStatus(uint32_t now) {
   lastPrintMs = now;
 
   Serial.print("STATUS=");
-  Serial.print(workStatusName(workStatus));
+  Serial.print(sensors_work_status_name(workStatus));
+  Serial.print(" | ");
+
+  const WarnStatusGroup* warnGroup = get_warn_status_group();
+  Serial.print("warns=");
+  if (warnGroup->count == 0) {
+    Serial.print("none");
+  } else {
+    bool printedWarn = false;
+    for (size_t i = 0; i < warnGroup->count; ++i) {
+      const WarnStatus& warn = warnGroup->items[i];
+      if (!warn.active) {
+        continue;
+      }
+      if (printedWarn) {
+        Serial.print(";");
+      }
+      printedWarn = true;
+      Serial.print(warning_type_name(warn.type));
+      Serial.print("(");
+      Serial.print(warning_type_name(warn.mainType));
+      Serial.print(",sev=");
+      Serial.print((int)warn.severity);
+      Serial.print(")");
+    }
+  }
   Serial.print(" | ");
 
   for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
@@ -501,7 +720,7 @@ void printStatus(uint32_t now) {
   Serial.println();
 }
 
-void setup() {
+void sensors_setup() {
   Serial.begin(115200);
   delay(300);
 
@@ -547,7 +766,7 @@ void setup() {
   calibrateAndAssignGroups();
 }
 
-void loop() {
+void sensors_loop() {
   static uint32_t lastSampleMs = 0;
   uint32_t now = millis();
   if (now - lastSampleMs < SAMPLE_INTERVAL_MS) {
