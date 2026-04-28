@@ -1,7 +1,7 @@
 # Desert Straw Barrier Robot
 
 ## Purpose
-This repository contains early bring-up code and notes for straw feeding detection.
+This repository contains early bring-up code and notes for straw checkerboard planting detection.
 The current focus is infrared analog sensing on ESP32-S3 for loader-to-feeder and feeder-to-wedger flow checks.
 
 ## Current Files
