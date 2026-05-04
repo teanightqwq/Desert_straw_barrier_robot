@@ -1,30 +1,55 @@
 #include "sensor.h"
 #include "warning.h"
+#include "logger.h"
 
 struct LoaderSensorState {
   int pin;
   const char* name;
   bool enabled;
-  SensorGroup group;
   int threshold;
   int raw;
-  bool warningActive;
-  uint32_t highStartMs;
-  uint32_t lowStartMs;
+  bool det;
 };
 
 LoaderSensorState loaderSensors[LOADER_SENSOR_COUNT] = {
-    {LOADER_PINS[0], "loader_1", false, GROUP_UNKNOWN, NEAR_THRESHOLD, 0, false, 0, 0},
-    {LOADER_PINS[1], "loader_2", false, GROUP_UNKNOWN, NEAR_THRESHOLD, 0, false, 0, 0},
-    {LOADER_PINS[2], "loader_3", false, GROUP_UNKNOWN, NEAR_THRESHOLD, 0, false, 0, 0},
-    {LOADER_PINS[3], "loader_4", false, GROUP_UNKNOWN, NEAR_THRESHOLD, 0, false, 0, 0},
+    {LOADER_PINS[0], "loader_1", false, NEAR_THRESHOLD, -1, false},
+    {LOADER_PINS[1], "loader_2", false, NEAR_THRESHOLD, -1, false},
+    {LOADER_PINS[2], "loader_3", false, NEAR_THRESHOLD, -1, false},
+    {LOADER_PINS[3], "loader_4", false, NEAR_THRESHOLD, -1, false},
 };
 
 WorkStatus workStatus = STATUS_NOT_START;
-uint32_t loaderAllClearStartMs = 0;
-int wedgerRaw = 0;
+int wedgerRaw = -1;
+bool wedgerDet = false;
 
 static WarnStatusGroup g_warn_group = {};
+
+static int coverage = 0;
+static int nearCount = 0;
+static int farCount = 0;
+static bool zone1Mismatch = false;
+static bool zone2Mismatch = false;
+static int pairA_raw = -1;
+static int pairB_raw = -1;
+static bool pairA_enabled = false;
+static bool pairB_enabled = false;
+static bool nearPairIsA = true;
+static bool nearPairAssigned = false;
+static bool nearFarAmbiguous = false;
+static int prevCoverage = 0;
+
+static uint32_t startHoldMs = 0;
+static uint32_t lowHold2Ms = 0;
+static uint32_t lowHold1Ms = 0;
+static uint32_t gapHoldMs = 0;
+static uint32_t zone1MismatchHoldMs = 0;
+static uint32_t zone2MismatchHoldMs = 0;
+static uint32_t rangeBlindNearHoldMs = 0;
+static uint32_t rangeBlindFarHoldMs = 0;
+static uint32_t endDetectHoldMs = 0;
+static uint32_t endDetectStartMs = 0;
+static uint32_t s5ConfirmHoldMs = 0;
+static uint32_t nearFarAmbigHoldMs = 0;
 
 bool hasValidPin(int pin) {
   return pin >= 0;
@@ -34,14 +59,23 @@ bool wedgerEnabled() {
   return hasValidPin(WEDGER_SENSOR_PIN);
 }
 
-const char* groupName(SensorGroup group) {
-  if (group == GROUP_NEAR) {
-    return "NEAR";
+bool updateHold(bool condition, uint32_t now, uint32_t holdMs, uint32_t* startMs) {
+  if (!condition) {
+    *startMs = 0;
+    return false;
   }
-  if (group == GROUP_FAR) {
-    return "FAR";
+  if (*startMs == 0) {
+    *startMs = now;
   }
-  return "UNKNOWN";
+  return (now - *startMs) >= holdMs;
+}
+
+bool inNearBand(int raw) {
+  return raw >= 0 && raw <= NEAR_THRESHOLD;
+}
+
+bool inFarBand(int raw) {
+  return raw >= FAR_THRESHOLD_MIN && raw <= FAR_THRESHOLD_MAX;
 }
 
 WarningType warning_main_type(WarningType type) {
@@ -175,14 +209,13 @@ void setWorkStatus(WorkStatus next, const char* reason) {
   }
 
   workStatus = next;
-  Serial.print("[STATUS] ");
-  Serial.print(sensors_work_status_name(workStatus));
+  char msg[128] = {0};
   if (reason != nullptr) {
-    Serial.print(" | ");
-    Serial.println(reason);
+    snprintf(msg, sizeof(msg), "status=%s reason=%s", sensors_work_status_name(workStatus), reason);
   } else {
-    Serial.println();
+    snprintf(msg, sizeof(msg), "status=%s", sensors_work_status_name(workStatus));
   }
+  logger_event("status", msg);
 }
 
 WorkStatus sensors_get_work_status() {
@@ -190,30 +223,31 @@ WorkStatus sensors_get_work_status() {
 }
 
 void log_warn_status(const char* action, const WarnStatus& warn) {
-  Serial.print("[WARN_STATUS] ");
-  Serial.print(action);
-  Serial.print(" type=");
-  Serial.print(warning_type_name(warn.type));
-  Serial.print(" main=");
-  Serial.print(warning_type_name(warn.mainType));
-  Serial.print(" sev=");
-  Serial.print((int)warn.severity);
-  Serial.print(" prev=");
-  Serial.print(sensors_work_status_name(warn.prevWorkStatus));
+  char msg[192] = {0};
   if (warn.message != nullptr) {
-    Serial.print(" msg=");
-    Serial.print(warn.message);
+    snprintf(msg, sizeof(msg), "warn=%s main=%s sev=%d prev=%s msg=%s",
+             warning_type_name(warn.type),
+             warning_type_name(warn.mainType),
+             static_cast<int>(warn.severity),
+             sensors_work_status_name(warn.prevWorkStatus),
+             warn.message);
+  } else {
+    snprintf(msg, sizeof(msg), "warn=%s main=%s sev=%d prev=%s",
+             warning_type_name(warn.type),
+             warning_type_name(warn.mainType),
+             static_cast<int>(warn.severity),
+             sensors_work_status_name(warn.prevWorkStatus));
   }
-  Serial.println();
+  logger_event(action, msg);
 }
 
 void set_warn_status(WarningType type, WarningSeverity severity, const char* message) {
   uint32_t now = millis();
   WarnStatus* warn = alloc_warn_status(type);
   if (warn == nullptr) {
-    Serial.print("[WARN_STATUS] drop type=");
-    Serial.print(warning_type_name(type));
-    Serial.println(" | warning group full");
+    char msg[96] = {0};
+    snprintf(msg, sizeof(msg), "warn=%s drop=group_full", warning_type_name(type));
+    logger_event("warn_drop", msg);
     return;
   }
 
@@ -249,8 +283,9 @@ void clear_warn_status(WarningType type, const char* reason) {
     }
     log_warn_status("clear", *warn);
     if (reason != nullptr) {
-      Serial.print("[WARN_STATUS] reason=");
-      Serial.println(reason);
+      char msg[128] = {0};
+      snprintf(msg, sizeof(msg), "warn=%s reason=%s", warning_type_name(warn->type), reason);
+      logger_event("warn_clear", msg);
     }
     *warn = g_warn_group.items[g_warn_group.count - 1];
     g_warn_group.count -= 1;
@@ -262,8 +297,9 @@ void clear_all_warn_status(const char* reason) {
     return;
   }
   if (reason != nullptr) {
-    Serial.print("[WARN_STATUS] clear_all reason=");
-    Serial.println(reason);
+    char msg[128] = {0};
+    snprintf(msg, sizeof(msg), "reason=%s", reason);
+    logger_event("warn_clear_all", msg);
   }
   for (size_t i = 0; i < g_warn_group.count; ++i) {
     log_warn_status("clear", g_warn_group.items[i]);
@@ -284,268 +320,127 @@ void handle_sensor_status_warning() {
   return;
 }
 
-bool anyLoaderWarningActive() {
-  for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
-    if (loaderSensors[i].enabled && loaderSensors[i].warningActive) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool anyLoaderHasStraw() {
-  for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
-    if (!loaderSensors[i].enabled) {
-      continue;
-    }
-    if (loaderSensors[i].raw < loaderSensors[i].threshold) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/* 
-### function bool allLoaderNoStraw ###
-
-# Check if all Loader Sensors detect no straws
-# params: none
-# return: 
-#       → false: one of the sensor have LoaderSensorState.raw lower than its set of threshold
-#       → true: otherwise (if all sensors have LoaderSensorState.raw higher than its set of threshold)
-
-* 检查Loader区域的红外传感器是否都检测到无干草
-* 参数: 无
-* 返回值:
-*       → false: 其中一个传感器的LoaderSensorState.raw低于其设定threshold值
-*       → true: 所有传感器的LoaderSensorState.raw皆高于其设定threshold值
-
-*/
-bool allLoaderNoStraw() {
-  bool hasEnabled = false;
-  for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
-    if (!loaderSensors[i].enabled) {
-      continue;
-    }
-    hasEnabled = true;
-    if (loaderSensors[i].raw < loaderSensors[i].threshold) {
-      return false;
-    }
-  }
-  return hasEnabled;
-}
-
-void classifyGroups(const uint16_t averages[LOADER_SENSOR_COUNT],
-                    uint8_t enabledOrder[LOADER_SENSOR_COUNT],
-                    size_t enabledCount,
-                    int* farThresholdOut) {
-  for (size_t i = 0; i < enabledCount; ++i) {
-    for (size_t j = i + 1; j < enabledCount; ++j) {
-      if (averages[enabledOrder[j]] < averages[enabledOrder[i]]) {
-        uint8_t tmp = enabledOrder[i];
-        enabledOrder[i] = enabledOrder[j];
-        enabledOrder[j] = tmp;
-      }
-    }
-  }
-
-  for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
-    loaderSensors[i].group = GROUP_UNKNOWN;
-    loaderSensors[i].threshold = NEAR_THRESHOLD;
-  }
-
-  if (enabledCount == 0) {
-    *farThresholdOut = FAR_THRESHOLD_DEFAULT;
-    return;
-  }
-
-  if (enabledCount == 1) {
-    loaderSensors[enabledOrder[0]].group = GROUP_NEAR;
-    loaderSensors[enabledOrder[0]].threshold = NEAR_THRESHOLD;
-    *farThresholdOut = FAR_THRESHOLD_DEFAULT;
-    return;
-  }
-
-  size_t nearCount = enabledCount / 2;
-  if (nearCount == 0) {
-    nearCount = 1;
-  }
-
-  for (size_t i = 0; i < nearCount; ++i) {
-    loaderSensors[enabledOrder[i]].group = GROUP_NEAR;
-    loaderSensors[enabledOrder[i]].threshold = NEAR_THRESHOLD;
-  }
-
-  uint32_t farSum = 0;
-  size_t farCount = 0;
-  for (size_t i = nearCount; i < enabledCount; ++i) {
-    loaderSensors[enabledOrder[i]].group = GROUP_FAR;
-    farSum += averages[enabledOrder[i]];
-    farCount += 1;
-  }
-
-  int dynamicFarThreshold = FAR_THRESHOLD_DEFAULT;
-  if (farCount > 0) {
-    float farMean = farSum / static_cast<float>(farCount);
-    dynamicFarThreshold = static_cast<int>(farMean * FAR_THRESHOLD_SCALE);
-    if (dynamicFarThreshold < FAR_THRESHOLD_MIN) {
-      dynamicFarThreshold = FAR_THRESHOLD_MIN;
-    }
-    if (dynamicFarThreshold > FAR_THRESHOLD_MAX) {
-      dynamicFarThreshold = FAR_THRESHOLD_MAX;
-    }
-  }
-
-  for (size_t i = nearCount; i < enabledCount; ++i) {
-    loaderSensors[enabledOrder[i]].threshold = dynamicFarThreshold;
-  }
-
-  *farThresholdOut = dynamicFarThreshold;
-}
-
-void calibrateAndAssignGroups() {
-  uint32_t sums[LOADER_SENSOR_COUNT] = {0, 0, 0, 0};
-  uint32_t counts[LOADER_SENSOR_COUNT] = {0, 0, 0, 0};
-  uint16_t averages[LOADER_SENSOR_COUNT] = {0, 0, 0, 0};
-  uint8_t enabledOrder[LOADER_SENSOR_COUNT] = {0, 0, 0, 0};
-  size_t enabledCount = 0;
-
-  for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
-    if (loaderSensors[i].enabled) {
-      enabledOrder[enabledCount] = static_cast<uint8_t>(i);
-      enabledCount += 1;
-    }
-  }
-
-  if (enabledCount == 0) {
-    Serial.println("[WARN] No loader sensor pins configured.");
-    return;
-  }
-
-  if (enabledCount > 1) {
-    Serial.println("Calibrating loader sensors for auto grouping...");
-    uint32_t startMs = millis();
-    while (millis() - startMs < CALIBRATION_MS) {
-      for (size_t i = 0; i < enabledCount; ++i) {
-        uint8_t idx = enabledOrder[i];
-        sums[idx] += analogRead(loaderSensors[idx].pin);
-        counts[idx] += 1;
-      }
-      delay(CALIBRATION_INTERVAL_MS);
-    }
-
-    for (size_t i = 0; i < enabledCount; ++i) {
-      uint8_t idx = enabledOrder[i];
-      if (counts[idx] > 0) {
-        averages[idx] = static_cast<uint16_t>(sums[idx] / counts[idx]);
-      }
-    }
-  }
-
-  int farThreshold = FAR_THRESHOLD_DEFAULT;
-  classifyGroups(averages, enabledOrder, enabledCount, &farThreshold);
-
-  if (enabledCount == 1) {
-    Serial.println("[WARN] Only one loader sensor configured, grouping is partial.");
-  }
-
-  Serial.print("Auto grouping complete. FAR threshold=");
-  Serial.println(farThreshold);
-  for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
-    Serial.print(loaderSensors[i].name);
-    if (!loaderSensors[i].enabled) {
-      Serial.println(" pin=TBD group=UNKNOWN threshold=TBD");
-      continue;
-    }
-
-    Serial.print(" pin=");
-    Serial.print(loaderSensors[i].pin);
-    Serial.print(" avg=");
-    Serial.print(averages[i]);
-    Serial.print(" group=");
-    Serial.print(groupName(loaderSensors[i].group));
-    Serial.print(" threshold=");
-    Serial.println(loaderSensors[i].threshold);
-  }
-}
-
-void updateSingleLoaderWarning(LoaderSensorState* sensor, uint32_t now) {
-  bool noStraw = sensor->raw > sensor->threshold;
-
-  if (noStraw) {
-    sensor->lowStartMs = 0;
-    if (sensor->highStartMs == 0) {
-      sensor->highStartMs = now;
-    }
-
-    if (!sensor->warningActive && (now - sensor->highStartMs >= ERROR_HOLD_MS)) {
-      sensor->warningActive = true;
-      Serial.print("[ERROR] ");
-      Serial.print(sensor->name);
-      Serial.print(" no straw for >= ");
-      Serial.print(ERROR_HOLD_MS);
-      Serial.print(" ms. raw=");
-      Serial.print(sensor->raw);
-      Serial.print(" threshold=");
-      Serial.println(sensor->threshold);
-    }
-  } else {
-    sensor->highStartMs = 0;
-    if (sensor->warningActive) {
-      if (sensor->lowStartMs == 0) {
-        sensor->lowStartMs = now;
-      }
-
-      if (now - sensor->lowStartMs >= CLEAR_HOLD_MS) {
-        sensor->warningActive = false;
-        sensor->lowStartMs = 0;
-        Serial.print("[RECOVER] ");
-        Serial.print(sensor->name);
-        Serial.print(" stable with straw for ");
-        Serial.print(CLEAR_HOLD_MS);
-        Serial.println(" ms.");
-      }
-    }
-  }
-}
-
 void updateLoaderSensors(uint32_t now) {
+  (void)now;
   for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
     LoaderSensorState* sensor = &loaderSensors[i];
     if (!sensor->enabled) {
+      sensor->raw = -1;
+      sensor->det = false;
       continue;
     }
 
     sensor->raw = analogRead(sensor->pin);
-
-    if (workStatus == STATUS_NOT_START || workStatus == STATUS_END ||
-        workStatus == STATUS_E_STOP) {
-      sensor->warningActive = false;
-      sensor->highStartMs = 0;
-      sensor->lowStartMs = 0;
-      continue;
-    }
-
-    updateSingleLoaderWarning(sensor, now);
+    sensor->det = (sensor->raw < sensor->threshold);
   }
 }
 
 void updateWedgerSensor() {
   if (!wedgerEnabled()) {
+    wedgerRaw = -1;
+    wedgerDet = false;
     return;
   }
   wedgerRaw = analogRead(WEDGER_SENSOR_PIN);
+  wedgerDet = (wedgerRaw < WEDGER_THRESHOLD);
+}
+
+void computeDerivedSignals(uint32_t now) {
+  (void)now;
+  coverage = 0;
+  for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
+    if (loaderSensors[i].enabled && loaderSensors[i].det) {
+      coverage += 1;
+    }
+  }
+
+  zone1Mismatch = loaderSensors[0].enabled && loaderSensors[2].enabled &&
+                  (loaderSensors[0].det != loaderSensors[2].det);
+  zone2Mismatch = loaderSensors[1].enabled && loaderSensors[3].enabled &&
+                  (loaderSensors[1].det != loaderSensors[3].det);
+
+  auto computePairRaw = [&](int idx1, int idx2, int* outRaw, bool* outEnabled) {
+    bool en1 = loaderSensors[idx1].enabled;
+    bool en2 = loaderSensors[idx2].enabled;
+    if (!en1 && !en2) {
+      *outRaw = -1;
+      *outEnabled = false;
+      return;
+    }
+    *outEnabled = true;
+    if (en1 && en2) {
+      *outRaw = (loaderSensors[idx1].raw < loaderSensors[idx2].raw)
+                    ? loaderSensors[idx1].raw
+                    : loaderSensors[idx2].raw;
+    } else if (en1) {
+      *outRaw = loaderSensors[idx1].raw;
+    } else {
+      *outRaw = loaderSensors[idx2].raw;
+    }
+  };
+
+  computePairRaw(0, 1, &pairA_raw, &pairA_enabled);
+  computePairRaw(2, 3, &pairB_raw, &pairB_enabled);
+
+  bool pairA_near = pairA_enabled && inNearBand(pairA_raw);
+  bool pairA_far = pairA_enabled && inFarBand(pairA_raw);
+  bool pairB_near = pairB_enabled && inNearBand(pairB_raw);
+  bool pairB_far = pairB_enabled && inFarBand(pairB_raw);
+
+  nearFarAmbiguous = false;
+  if (pairA_near && pairB_far) {
+    nearPairIsA = true;
+    nearPairAssigned = true;
+    nearFarAmbigHoldMs = 0;
+  } else if (pairB_near && pairA_far) {
+    nearPairIsA = false;
+    nearPairAssigned = true;
+    nearFarAmbigHoldMs = 0;
+  } else {
+    nearFarAmbiguous = true;
+  }
+
+  if (!nearPairAssigned) {
+    nearPairIsA = true;
+  }
+
+  nearCount = 0;
+  farCount = 0;
+  if (nearPairIsA) {
+    if (loaderSensors[0].enabled && loaderSensors[0].det) {
+      nearCount += 1;
+    }
+    if (loaderSensors[1].enabled && loaderSensors[1].det) {
+      nearCount += 1;
+    }
+    if (loaderSensors[2].enabled && loaderSensors[2].det) {
+      farCount += 1;
+    }
+    if (loaderSensors[3].enabled && loaderSensors[3].det) {
+      farCount += 1;
+    }
+  } else {
+    if (loaderSensors[2].enabled && loaderSensors[2].det) {
+      nearCount += 1;
+    }
+    if (loaderSensors[3].enabled && loaderSensors[3].det) {
+      nearCount += 1;
+    }
+    if (loaderSensors[0].enabled && loaderSensors[0].det) {
+      farCount += 1;
+    }
+    if (loaderSensors[1].enabled && loaderSensors[1].det) {
+      farCount += 1;
+    }
+  }
 }
 
 void resetFlowTracking() {
-  loaderAllClearStartMs = 0;
+  endDetectHoldMs = 0;
+  endDetectStartMs = 0;
+  s5ConfirmHoldMs = 0;
   clear_warn_status(WARNING_MAIN_FLOW, "flow reset");
   clear_warn_status(WARNING_FEED_TIMEOUT, "flow reset");
-}
-
-bool isFlowTransitionStatus(WorkStatus status) {
-  (void)status;
-  return has_warn_status(WARNING_MAIN_FLOW);
 }
 
 void processWorkFlow(uint32_t now) {
@@ -554,88 +449,125 @@ void processWorkFlow(uint32_t now) {
   }
 
   if (workStatus == STATUS_NOT_START) {
-    if (anyLoaderHasStraw()) {
-      setWorkStatus(STATUS_ON_WORK, "First loader straw detected.");
+    if (updateHold(coverage >= 2, now, T_START_HOLD, &startHoldMs)) {
+      setWorkStatus(STATUS_ON_WORK, "start: coverage>=2");
+      clear_all_warn_status("start");
+      startHoldMs = 0;
     } else {
       return;
     }
   }
 
-  bool hasStrawAtLoader = anyLoaderHasStraw();
-  bool noStrawAtLoader = allLoaderNoStraw();
+  bool sensorStatusActive = false;
+  const char* sensorStatusMsg = nullptr;
 
-  if (hasStrawAtLoader) {
-    if (loaderAllClearStartMs != 0 || isFlowTransitionStatus(workStatus)) {
-      resetFlowTracking();
-      setWorkStatus(STATUS_ON_WORK, "[FLOW] Straw returned at loader. Detection timer reset.");
+  bool zone1Hold = updateHold(zone1Mismatch, now, T_MISMATCH_HOLD, &zone1MismatchHoldMs);
+  bool zone2Hold = updateHold(zone2Mismatch, now, T_MISMATCH_HOLD, &zone2MismatchHoldMs);
+  bool ambigHold = updateHold(nearFarAmbiguous, now, T_MISMATCH_HOLD, &nearFarAmbigHoldMs);
+
+  bool nearEnabled = nearPairIsA ? pairA_enabled : pairB_enabled;
+  bool farEnabled = nearPairIsA ? pairB_enabled : pairA_enabled;
+  bool nearBlindHold = false;
+  bool farBlindHold = false;
+
+  if (nearEnabled) {
+    nearBlindHold = updateHold(nearCount == 0, now, T_RANGE_BLIND_HOLD, &rangeBlindNearHoldMs);
+  } else {
+    rangeBlindNearHoldMs = 0;
+  }
+
+  if (farEnabled) {
+    farBlindHold = updateHold(farCount == 0, now, T_RANGE_BLIND_HOLD, &rangeBlindFarHoldMs);
+  } else {
+    rangeBlindFarHoldMs = 0;
+  }
+
+  if (zone1Hold) {
+    sensorStatusActive = true;
+    sensorStatusMsg = "zone1 mismatch (S1!=S3)";
+  } else if (zone2Hold) {
+    sensorStatusActive = true;
+    sensorStatusMsg = "zone2 mismatch (S2!=S4)";
+  } else if (ambigHold) {
+    sensorStatusActive = true;
+    sensorStatusMsg = "near/far ambiguous";
+  } else if (nearBlindHold) {
+    sensorStatusActive = true;
+    sensorStatusMsg = "near layer blind";
+  } else if (farBlindHold) {
+    sensorStatusActive = true;
+    sensorStatusMsg = "far layer blind";
+  }
+
+  if (sensorStatusActive) {
+    set_warn_status(WARNING_SENSOR_STATUS, SEVERITY_NORMAL, sensorStatusMsg);
+  } else {
+    clear_warn_status(WARNING_SENSOR_STATUS, "sensor status cleared");
+  }
+
+  bool brokenActive = false;
+  const char* brokenMsg = nullptr;
+
+  bool low2Hold = updateHold(coverage == 2, now, T_LOW_HOLD, &lowHold2Ms);
+  bool low1Hold = updateHold(coverage <= 1, now, T_LOW_HOLD, &lowHold1Ms);
+
+  bool gapCond = (workStatus == STATUS_ON_WORK && prevCoverage >= 3 && coverage <= 1);
+  bool gapHold = updateHold(gapCond, now, T_GAP_HOLD, &gapHoldMs);
+
+  if (gapHold) {
+    brokenActive = true;
+    brokenMsg = "gap detected";
+  } else if (low1Hold) {
+    brokenActive = true;
+    brokenMsg = "low coverage<=1";
+  } else if (low2Hold) {
+    brokenActive = true;
+    brokenMsg = "low coverage=2";
+  }
+
+  if (brokenActive) {
+    set_warn_status(WARNING_BROKEN_BALE, SEVERITY_NORMAL, brokenMsg);
+  } else {
+    clear_warn_status(WARNING_BROKEN_BALE, "coverage recovered");
+  }
+
+  if (workStatus == STATUS_ON_WORK) {
+    if (updateHold(coverage == 0, now, T_END_DETECT_HOLD, &endDetectHoldMs)) {
+      setWorkStatus(STATUS_END_DETECTION, "end detecting (coverage==0)");
+      set_warn_status(WARNING_MAIN_FLOW, SEVERITY_NORMAL, "end detecting (coverage==0)");
+      endDetectStartMs = now;
+      s5ConfirmHoldMs = 0;
     }
-    return;
   }
 
-  if (!noStrawAtLoader) {
-    return;
-  }
-
-  if (loaderAllClearStartMs == 0) {
-    loaderAllClearStartMs = now;
-    set_warn_status(WARNING_MAIN_FLOW, SEVERITY_NORMAL, "[FLOW] Loader sensors clear for >2s. Detecting possible warning.");
-    return;
-  }
-
-  uint32_t noStrawElapsed = now - loaderAllClearStartMs;
-
-  if (noStrawElapsed >= FLOW_END_WARNING_HOLD_MS && !has_warn_status(WARNING_MAIN_FLOW) &&
-      workStatus != STATUS_END_DETECTION) {
-    set_warn_status(WARNING_MAIN_FLOW, SEVERITY_NORMAL, "[FLOW] Loader sensors clear for >2s. Detecting possible warning.");
-  }
-
-  if (noStrawElapsed >= FLOW_END_DETECTION_HOLD_MS && workStatus != STATUS_END_DETECTION) {
-    setWorkStatus(STATUS_END_DETECTION,
-                  "[FLOW] Loader sensors clear for >5s. Start End Detection and clear error.");
-  }
-
-  if (noStrawElapsed < FEED_PROCESS_TIME_MS) {
-    return;
-  }
-
-  if (!wedgerEnabled()) {
-    if (!has_warn_status(WARNING_FEED_TIMEOUT)) {
-      set_warn_status(WARNING_FEED_TIMEOUT, SEVERITY_IMPORTANT,
-                      "Feeder timeout reached, wedger sensor still < threshold.");
+  if (workStatus == STATUS_END_DETECTION) {
+    if (endDetectStartMs == 0) {
+      endDetectStartMs = now;
     }
-    return;
-  }
 
-  if (wedgerRaw < WEDGER_THRESHOLD) {
-    if (!has_warn_status(WARNING_FEED_TIMEOUT)) {
-      set_warn_status(WARNING_FEED_TIMEOUT, SEVERITY_IMPORTANT,
-                      "Feeder timeout reached, wedger sensor still < threshold.");
+    if (wedgerEnabled()) {
+      if (updateHold(wedgerDet, now, T_S5_CONFIRM_HOLD, &s5ConfirmHoldMs)) {
+        setWorkStatus(STATUS_END, "S5 confirmed end");
+        clear_warn_status(WARNING_MAIN_FLOW, "S5 confirmed");
+        clear_warn_status(WARNING_FEED_TIMEOUT, "S5 confirmed");
+      }
+    } else {
+      s5ConfirmHoldMs = 0;
+    }
+
+    if (now - endDetectStartMs >= T_FEED_PROCESS) {
+      set_warn_status(WARNING_FEED_TIMEOUT, SEVERITY_NORMAL, "timeout waiting for S5 confirm");
     }
   } else {
-    resetFlowTracking();
-    setWorkStatus(STATUS_END, "Feed process completed and wedger check passed.");
-  }
-}
-
-void refreshWorkStatusByWarnings() {
-  if (workStatus == STATUS_NOT_START || workStatus == STATUS_END ||
-      workStatus == STATUS_E_STOP) {
-    return;
-  }
-
-  bool loaderWarn = anyLoaderWarningActive();
-
-  if (loaderWarn) {
-    if (!has_warn_status(WARNING_MAIN_LOADER)) {
-      set_warn_status(WARNING_MAIN_LOADER, SEVERITY_NORMAL, "Loader warning active, system keeps running.");
+    endDetectStartMs = 0;
+    s5ConfirmHoldMs = 0;
+    if (coverage > 0) {
+      clear_warn_status(WARNING_MAIN_FLOW, "coverage restored");
+      clear_warn_status(WARNING_FEED_TIMEOUT, "coverage restored");
     }
-  } else {
-    clear_warn_status(WARNING_MAIN_LOADER, "Loader warnings cleared.");
   }
 
-  if (workStatus != STATUS_ON_WORK && g_warn_group.count == 0) {
-    setWorkStatus(STATUS_ON_WORK, "Warnings cleared.");
-  }
+  prevCoverage = coverage;
 }
 
 void printStatus(uint32_t now) {
@@ -645,84 +577,32 @@ void printStatus(uint32_t now) {
   }
   lastPrintMs = now;
 
-  Serial.print("STATUS=");
-  Serial.print(sensors_work_status_name(workStatus));
-  Serial.print(" | ");
+  int raw[4] = {loaderSensors[0].raw, loaderSensors[1].raw,
+                loaderSensors[2].raw, loaderSensors[3].raw};
+  int thr[4] = {
+      loaderSensors[0].enabled ? loaderSensors[0].threshold : -1,
+      loaderSensors[1].enabled ? loaderSensors[1].threshold : -1,
+      loaderSensors[2].enabled ? loaderSensors[2].threshold : -1,
+      loaderSensors[3].enabled ? loaderSensors[3].threshold : -1,
+  };
 
-  const WarnStatusGroup* warnGroup = get_warn_status_group();
-  Serial.print("warns=");
-  if (warnGroup->count == 0) {
-    Serial.print("none");
-  } else {
-    bool printedWarn = false;
-    for (size_t i = 0; i < warnGroup->count; ++i) {
-      const WarnStatus& warn = warnGroup->items[i];
-      if (!warn.active) {
-        continue;
-      }
-      if (printedWarn) {
-        Serial.print(";");
-      }
-      printedWarn = true;
-      Serial.print(warning_type_name(warn.type));
-      Serial.print("(");
-      Serial.print(warning_type_name(warn.mainType));
-      Serial.print(",sev=");
-      Serial.print((int)warn.severity);
-      Serial.print(")");
-    }
-  }
-  Serial.print(" | ");
-
-  for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
-    LoaderSensorState* sensor = &loaderSensors[i];
-    Serial.print(sensor->name);
-    if (!sensor->enabled) {
-      Serial.print("(pin=TBD) ");
-      continue;
-    }
-
-    float v = (sensor->raw / 4095.0f) * ADC_FULL_SCALE_V;
-    Serial.print("(");
-    Serial.print(groupName(sensor->group));
-    Serial.print(",raw=");
-    Serial.print(sensor->raw);
-    Serial.print(",thr=");
-    Serial.print(sensor->threshold);
-    Serial.print(",V=");
-    Serial.print(v, 3);
-    Serial.print(",");
-    Serial.print(sensor->warningActive ? "WARNING" : "OK");
-    Serial.print(") ");
-  }
-
-  if (wedgerEnabled()) {
-    float wedgerV = (wedgerRaw / 4095.0f) * ADC_FULL_SCALE_V;
-    Serial.print("wedger(raw=");
-    Serial.print(wedgerRaw);
-    Serial.print(",thr=");
-    Serial.print(WEDGER_THRESHOLD);
-    Serial.print(",V=");
-    Serial.print(wedgerV, 3);
-    Serial.print(") ");
-  } else {
-    Serial.print("wedger(pin=TBD) ");
-  }
-
-  if (loaderAllClearStartMs != 0) {
-    uint32_t elapsed = now - loaderAllClearStartMs;
-    uint32_t leftMs =
-        (elapsed >= FEED_PROCESS_TIME_MS) ? 0 : (FEED_PROCESS_TIME_MS - elapsed);
-    Serial.print("feed_timer_left_ms=");
-    Serial.print(leftMs);
-  }
-
-  Serial.println();
+  logger_snapshot(sensors_work_status_name(workStatus),
+                  coverage,
+                  nearCount,
+                  farCount,
+                  zone1Mismatch,
+                  zone2Mismatch,
+                  raw,
+                  thr,
+                  get_warn_status_group(),
+                  warning_type_name);
 }
 
 void sensors_setup() {
   Serial.begin(115200);
   delay(300);
+
+  logger_session_header(SYSTEM_NAME);
 
   analogReadResolution(12); // 0..4095
   for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
@@ -736,34 +616,7 @@ void sensors_setup() {
     pinMode(WEDGER_SENSOR_PIN, INPUT);
   }
 
-  Serial.println("IR AO loader/wedger monitor start (ESP32-S3)");
-  Serial.print("Near threshold=");
-  Serial.print(NEAR_THRESHOLD);
-  Serial.print(" | Error hold(ms)=");
-  Serial.print(ERROR_HOLD_MS);
-  Serial.print(" | Clear hold(ms)=");
-  Serial.print(CLEAR_HOLD_MS);
-  Serial.print(" | Feed process(ms)=");
-  Serial.println(FEED_PROCESS_TIME_MS);
-
-  for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
-    Serial.print(loaderSensors[i].name);
-    Serial.print(" pin=");
-    if (loaderSensors[i].enabled) {
-      Serial.println(loaderSensors[i].pin);
-    } else {
-      Serial.println("TBD");
-    }
-  }
-
-  Serial.print("wedger_sensor pin=");
-  if (wedgerEnabled()) {
-    Serial.println(WEDGER_SENSOR_PIN);
-  } else {
-    Serial.println("TBD");
-  }
-
-  calibrateAndAssignGroups();
+  logger_event("boot", "IR AO loader/wedger monitor start");
 }
 
 void sensors_loop() {
@@ -776,7 +629,7 @@ void sensors_loop() {
 
   updateLoaderSensors(now);
   updateWedgerSensor();
+  computeDerivedSignals(now);
   processWorkFlow(now);
-  refreshWorkStatusByWarnings();
   printStatus(now);
 }

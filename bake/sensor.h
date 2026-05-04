@@ -30,14 +30,17 @@ constexpr int LOADER_PINS[LOADER_SENSOR_COUNT] = {
 // Timing (ms)
 constexpr uint32_t PRINT_PERIOD_MS = 500;
 constexpr uint32_t SAMPLE_INTERVAL_MS = 5;
-constexpr uint32_t CALIBRATION_MS = 1500;
-constexpr uint32_t CALIBRATION_INTERVAL_MS = 5;
-constexpr uint32_t ERROR_HOLD_MS = 2500;
-constexpr uint32_t CLEAR_HOLD_MS = 1000;
-constexpr uint32_t FLOW_END_WARNING_HOLD_MS = 2000;
-constexpr uint32_t FLOW_END_DETECTION_HOLD_MS = 5000;
 constexpr uint32_t FEED_PROCESS_TIME_MS = 18000;
-constexpr uint32_t FLOW_WARNING_REPEAT_MS = 2000;
+
+// Coverage/flow hold timers (ms)
+constexpr uint32_t T_START_HOLD = 1000;
+constexpr uint32_t T_LOW_HOLD = 1000;
+constexpr uint32_t T_MISMATCH_HOLD = 1000;
+constexpr uint32_t T_RANGE_BLIND_HOLD = 1000;
+constexpr uint32_t T_GAP_HOLD = 800;
+constexpr uint32_t T_END_DETECT_HOLD = 2000;
+constexpr uint32_t T_FEED_PROCESS = FEED_PROCESS_TIME_MS;
+constexpr uint32_t T_S5_CONFIRM_HOLD = 1000;
 
 // Thresholds
 constexpr int NEAR_THRESHOLD = 300;
@@ -74,17 +77,11 @@ const char* sensors_work_status_name(WorkStatus status);
 // ============================
 
 void setWorkStatus(WorkStatus next, const char* reason);
-bool anyLoaderWarningActive();
-bool anyLoaderHasStraw();
-bool allLoaderNoStraw();
-void calibrateAndAssignGroups();
-void updateSingleLoaderWarning(LoaderSensorState* sensor, uint32_t now);
 void updateLoaderSensors(uint32_t now);
 void updateWedgerSensor();
+void computeDerivedSignals(uint32_t now);
 void resetFlowTracking();
-bool isFlowTransitionStatus(WorkStatus status);
 void processWorkFlow(uint32_t now);
-void refreshWorkStatusByWarnings();
 void printStatus(uint32_t now);
 
 #endif // SENSOR_H
