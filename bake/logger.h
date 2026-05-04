@@ -19,4 +19,20 @@ void logger_snapshot(const char* status,
                      const WarnStatusGroup* warnGroup,
                      const char* (*warn_name)(WarningType));
 
+void logger_csv_header();
+void logger_csv_snapshot(const char* status,
+                         int coverage,
+                         bool nearPairIsA,
+                         int nearCount,
+                         int farCount,
+                         bool zone1Mismatch,
+                         bool zone2Mismatch,
+                         int pairA_raw,
+                         int pairB_raw,
+                         const int raw[4],
+                         const int thr[4],
+                         const bool enabled[4],
+                         const WarnStatusGroup* warnGroup,
+                         const char* (*warn_name)(WarningType));
+
 #endif // LOGGER_H

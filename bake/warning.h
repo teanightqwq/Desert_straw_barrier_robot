@@ -13,18 +13,18 @@ enum WorkStatus {
 };
 
 enum WarningType {
-  // 主类
+  // Main type 主类
   WARNING_NONE,
   WARNING_MAIN_LOADER,      // 载草系统警告(未细分)
   WARNING_MAIN_FLOW,        // 结束流程时正常报错
-  // 占位符
+  // Filler 占位符
   WARNING_UNDEFINED,        // 暂时未定义
   WARNING_NO_SUB,           // 主类警告无子类项
-  // 子类 (LOADER)
+  // Sub type子类 (LOADER)
   WARNING_DISPLACED_BALE,   // 草捆偏移导致的左右草量不同
   WARNING_BROKEN_BALE,      // 草捆毁坏导致的部分传感器识别错误
   WARNING_SENSOR_STATUS,    // 传感器未正确设置/传感器未完全设置完毕/传感器毁坏
-  // 子类 (FLOW)
+  // Sub type 子类 (FLOW)
   WARNING_FEED_TIMEOUT,     // 结束流程较预设值慢
 };
 

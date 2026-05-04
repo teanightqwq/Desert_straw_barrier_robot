@@ -124,3 +124,100 @@ void logger_snapshot(const char* status,
   }
   Serial.println();
 }
+
+void logger_csv_header() {
+  Serial.println("[CSV_HEADER] t_ms,status,coverage,near_pair,nearCount,farCount,zone1Mismatch,zone2Mismatch,pairA_raw,pairB_raw,raw1,raw2,raw3,raw4,thr1,thr2,thr3,thr4,enabled1,enabled2,enabled3,enabled4,warn_count,warn_list");
+}
+
+void logger_csv_snapshot(const char* status,
+                         int coverage,
+                         bool nearPairIsA,
+                         int nearCount,
+                         int farCount,
+                         bool zone1Mismatch,
+                         bool zone2Mismatch,
+                         int pairA_raw,
+                         int pairB_raw,
+                         const int raw[4],
+                         const int thr[4],
+                         const bool enabled[4],
+                         const WarnStatusGroup* warnGroup,
+                         const char* (*warn_name)(WarningType)) {
+  char warnBuf[256] = {0};
+  size_t pos = 0;
+  size_t warnCount = 0;
+
+  if (warnGroup) {
+    for (size_t i = 0; i < warnGroup->count; ++i) {
+      const WarnStatus& warn = warnGroup->items[i];
+      if (!warn.active) {
+        continue;
+      }
+      const char* name = warn_name ? warn_name(warn.type) : "warn";
+      if (pos < sizeof(warnBuf) - 1 && warnCount > 0) {
+        warnBuf[pos++] = ';';
+        warnBuf[pos] = '\0';
+      }
+      if (pos < sizeof(warnBuf) - 1) {
+        int written = snprintf(warnBuf + pos, sizeof(warnBuf) - pos, "%s", name);
+        if (written > 0) {
+          pos += static_cast<size_t>(written);
+          if (pos >= sizeof(warnBuf)) {
+            pos = sizeof(warnBuf) - 1;
+          }
+        }
+      }
+      warnCount += 1;
+    }
+  }
+
+  Serial.print("[CSV] ");
+  Serial.print(millis());
+  Serial.print(",");
+  Serial.print(status ? status : "-");
+  Serial.print(",");
+  Serial.print(coverage);
+  Serial.print(",");
+  Serial.print(nearPairIsA ? "A" : "B");
+  Serial.print(",");
+  Serial.print(nearCount);
+  Serial.print(",");
+  Serial.print(farCount);
+  Serial.print(",");
+  Serial.print(zone1Mismatch ? 1 : 0);
+  Serial.print(",");
+  Serial.print(zone2Mismatch ? 1 : 0);
+  Serial.print(",");
+  Serial.print(pairA_raw);
+  Serial.print(",");
+  Serial.print(pairB_raw);
+  Serial.print(",");
+  Serial.print(raw[0]);
+  Serial.print(",");
+  Serial.print(raw[1]);
+  Serial.print(",");
+  Serial.print(raw[2]);
+  Serial.print(",");
+  Serial.print(raw[3]);
+  Serial.print(",");
+  Serial.print(thr[0]);
+  Serial.print(",");
+  Serial.print(thr[1]);
+  Serial.print(",");
+  Serial.print(thr[2]);
+  Serial.print(",");
+  Serial.print(thr[3]);
+  Serial.print(",");
+  Serial.print(enabled[0] ? 1 : 0);
+  Serial.print(",");
+  Serial.print(enabled[1] ? 1 : 0);
+  Serial.print(",");
+  Serial.print(enabled[2] ? 1 : 0);
+  Serial.print(",");
+  Serial.print(enabled[3] ? 1 : 0);
+  Serial.print(",");
+  Serial.print(warnCount);
+  Serial.print(",\"");
+  Serial.print(warnBuf);
+  Serial.println("\"");
+}

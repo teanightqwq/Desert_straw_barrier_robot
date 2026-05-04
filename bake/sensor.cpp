@@ -1,5 +1,4 @@
 #include "sensor.h"
-#include "warning.h"
 #include "logger.h"
 
 struct LoaderSensorState {
@@ -282,11 +281,6 @@ void clear_warn_status(WarningType type, const char* reason) {
       continue;
     }
     log_warn_status("clear", *warn);
-    if (reason != nullptr) {
-      char msg[128] = {0};
-      snprintf(msg, sizeof(msg), "warn=%s reason=%s", warning_type_name(warn->type), reason);
-      logger_event("warn_clear", msg);
-    }
     *warn = g_warn_group.items[g_warn_group.count - 1];
     g_warn_group.count -= 1;
   }
@@ -577,14 +571,20 @@ void printStatus(uint32_t now) {
   }
   lastPrintMs = now;
 
-  int raw[4] = {loaderSensors[0].raw, loaderSensors[1].raw,
-                loaderSensors[2].raw, loaderSensors[3].raw};
-  int thr[4] = {
+    int raw[4] = {loaderSensors[0].raw, loaderSensors[1].raw,
+          loaderSensors[2].raw, loaderSensors[3].raw};
+    int thr[4] = {
       loaderSensors[0].enabled ? loaderSensors[0].threshold : -1,
       loaderSensors[1].enabled ? loaderSensors[1].threshold : -1,
       loaderSensors[2].enabled ? loaderSensors[2].threshold : -1,
       loaderSensors[3].enabled ? loaderSensors[3].threshold : -1,
-  };
+    };
+    bool enabled[4] = {
+      loaderSensors[0].enabled,
+      loaderSensors[1].enabled,
+      loaderSensors[2].enabled,
+      loaderSensors[3].enabled,
+    };
 
   logger_snapshot(sensors_work_status_name(workStatus),
                   coverage,
@@ -596,6 +596,21 @@ void printStatus(uint32_t now) {
                   thr,
                   get_warn_status_group(),
                   warning_type_name);
+
+    logger_csv_snapshot(sensors_work_status_name(workStatus),
+              coverage,
+              nearPairIsA,
+              nearCount,
+              farCount,
+              zone1Mismatch,
+              zone2Mismatch,
+              pairA_raw,
+              pairB_raw,
+              raw,
+              thr,
+              enabled,
+              get_warn_status_group(),
+              warning_type_name);
 }
 
 void sensors_setup() {
@@ -603,6 +618,7 @@ void sensors_setup() {
   delay(300);
 
   logger_session_header(SYSTEM_NAME);
+  logger_csv_header();
 
   analogReadResolution(12); // 0..4095
   for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
