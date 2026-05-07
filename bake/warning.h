@@ -13,19 +13,14 @@ enum WorkStatus {
 };
 
 enum WarningType {
-  // Main type 主类
   WARNING_NONE,
-  WARNING_MAIN_LOADER,      // 载草系统警告(未细分)
-  WARNING_MAIN_FLOW,        // 结束流程时正常报错
-  // Filler 占位符
-  WARNING_UNDEFINED,        // 暂时未定义
-  WARNING_NO_SUB,           // 主类警告无子类项
-  // Sub type子类 (LOADER)
-  WARNING_DISPLACED_BALE,   // 草捆偏移导致的左右草量不同
-  WARNING_BROKEN_BALE,      // 草捆毁坏导致的部分传感器识别错误
-  WARNING_SENSOR_STATUS,    // 传感器未正确设置/传感器未完全设置完毕/传感器毁坏
-  // Sub type 子类 (FLOW)
-  WARNING_FEED_TIMEOUT,     // 结束流程较预设值慢
+  WARNING_LOW_COVERAGE,            // sustained low coverage
+  WARNING_GAP_DETECTED,            // coverage drop event
+  WARNING_SENSOR_MISCONFIG,        // zone mismatch / misconfig
+  WARNING_RANGE_GROUP_BLIND_NEAR,  // near layer blind
+  WARNING_RANGE_GROUP_BLIND_FAR,   // far layer blind
+  WARNING_FLOW_END_DETECTING,      // end detecting (coverage==0)
+  WARNING_FEED_TIMEOUT,            // timeout waiting for S5 confirm
 };
 
 enum WarningSeverity {
@@ -37,7 +32,6 @@ enum WarningSeverity {
 
 struct WarnStatus {
   WarningType type;
-  WarningType mainType;
   WarningSeverity severity;
   WorkStatus prevWorkStatus;
   uint32_t startMs;
@@ -55,20 +49,11 @@ struct WarnStatusGroup {
 };
 
 // Warning API
-WarningType warning_main_type(WarningType type);
-bool warning_is_main_type(WarningType type);
-bool warning_is_loader_subtype(WarningType type);
-bool warning_is_flow_subtype(WarningType type);
 const char* warning_type_name(WarningType type);
 const WarnStatusGroup* get_warn_status_group();
 bool has_warn_status(WarningType type);
 void set_warn_status(WarningType type, WarningSeverity severity, const char* message);
 void clear_warn_status(WarningType type, const char* reason);
 void clear_all_warn_status(const char* reason);
-
-// Loader subwarning handlers (skeleton only)
-void handle_displaced_bale_warning();
-void handle_broken_bale_warning();
-void handle_sensor_status_warning();
 
 #endif // WARNING_H

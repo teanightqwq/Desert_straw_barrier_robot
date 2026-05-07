@@ -78,6 +78,7 @@ void logger_snapshot(const char* status,
                      bool zone1Mismatch,
                      bool zone2Mismatch,
                      const int raw[4],
+                     const float distMm[4],
                      const int thr[4],
                      const WarnStatusGroup* warnGroup,
                      const char* (*warn_name)(WarningType)) {
@@ -99,6 +100,11 @@ void logger_snapshot(const char* status,
   for (int i = 0; i < 4; ++i) {
     if (i > 0) Serial.print(",");
     Serial.print(raw[i]);
+  }
+  Serial.print("] loader_dist_mm=[");
+  for (int i = 0; i < 4; ++i) {
+    if (i > 0) Serial.print(",");
+    Serial.print(distMm[i], 2);
   }
   Serial.print("] loader_thr=[");
   for (int i = 0; i < 4; ++i) {
@@ -126,7 +132,7 @@ void logger_snapshot(const char* status,
 }
 
 void logger_csv_header() {
-  Serial.println("[CSV_HEADER] t_ms,status,coverage,near_pair,nearCount,farCount,zone1Mismatch,zone2Mismatch,pairA_raw,pairB_raw,raw1,raw2,raw3,raw4,thr1,thr2,thr3,thr4,enabled1,enabled2,enabled3,enabled4,warn_count,warn_list");
+  Serial.println("[CSV_HEADER] t_ms,status,coverage,near_pair,nearCount,farCount,zone1Mismatch,zone2Mismatch,pairA_raw,pairB_raw,raw1,raw2,raw3,raw4,dist1_mm,dist2_mm,dist3_mm,dist4_mm,thr1,thr2,thr3,thr4,enabled1,enabled2,enabled3,enabled4,warn_count,warn_list");
 }
 
 void logger_csv_snapshot(const char* status,
@@ -139,6 +145,7 @@ void logger_csv_snapshot(const char* status,
                          int pairA_raw,
                          int pairB_raw,
                          const int raw[4],
+                         const float distMm[4],
                          const int thr[4],
                          const bool enabled[4],
                          const WarnStatusGroup* warnGroup,
@@ -199,6 +206,14 @@ void logger_csv_snapshot(const char* status,
   Serial.print(raw[2]);
   Serial.print(",");
   Serial.print(raw[3]);
+  Serial.print(",");
+  Serial.print(distMm[0], 2);
+  Serial.print(",");
+  Serial.print(distMm[1], 2);
+  Serial.print(",");
+  Serial.print(distMm[2], 2);
+  Serial.print(",");
+  Serial.print(distMm[3], 2);
   Serial.print(",");
   Serial.print(thr[0]);
   Serial.print(",");

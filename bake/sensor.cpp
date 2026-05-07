@@ -30,12 +30,23 @@ static bool zone1Mismatch = false;
 static bool zone2Mismatch = false;
 static int pairA_raw = -1;
 static int pairB_raw = -1;
-static bool pairA_enabled = false;
+static bool pairA_enabled = false
+;
 static bool pairB_enabled = false;
 static bool nearPairIsA = true;
 static bool nearPairAssigned = false;
 static bool nearFarAmbiguous = false;
 static int prevCoverage = 0;
+
+// Distance estimation tables (mm <-> raw)
+static const float kLinearDistMm[] = {0.3f, 0.5f, 0.7f, 1.0f, 1.2f, 1.5f, 2.0f, 2.3f, 2.4f, 2.5f};
+static const int kLinearRaw[] = {105, 115, 125, 135, 150, 160, 200, 211, 295, 305};
+static const float kExpDistMm[] = {2.7f, 2.9f, 3.0f, 3.5f, 4.0f};
+static const int kExpRaw[] = {530, 920, 1250, 1500, 2465};
+static const float kMinDistMm = 0.3f;
+static const float kMaxDistMm = 4.0f;
+static const int kLinearCount = sizeof(kLinearRaw) / sizeof(kLinearRaw[0]);
+static const int kExpCount = sizeof(kExpRaw) / sizeof(kExpRaw[0]);
 
 static uint32_t startHoldMs = 0;
 static uint32_t lowHold2Ms = 0;
@@ -77,58 +88,66 @@ bool inFarBand(int raw) {
   return raw >= FAR_THRESHOLD_MIN && raw <= FAR_THRESHOLD_MAX;
 }
 
-WarningType warning_main_type(WarningType type) {
-  // Classify subtype back to main type; handle misclassifications
-  if (type == WARNING_DISPLACED_BALE || type == WARNING_BROKEN_BALE ||
-      type == WARNING_SENSOR_STATUS) {
-    return WARNING_MAIN_LOADER;
+static float estimateDistanceMm(int raw) {
+  if (raw <= kLinearRaw[0]) {
+    return kMinDistMm;
   }
-  if (type == WARNING_FEED_TIMEOUT) {
-    return WARNING_MAIN_FLOW;
+  if (raw >= kExpRaw[kExpCount - 1]) {
+    return kMaxDistMm;
   }
-  // If a main type is passed directly, return it as-is
-  if (type == WARNING_MAIN_LOADER || type == WARNING_MAIN_FLOW) {
-    return type;
-  }
-  // WARNING_NONE -> treat as UNDEFINED in MAIN_LOADER scope
-  if (type == WARNING_NONE) {
-    return WARNING_MAIN_LOADER;
-  }
-  // Already a placeholder (UNDEFINED, NO_SUB) -> return as-is
-  return type;
-}
 
-bool warning_is_main_type(WarningType type) {
-  return type == WARNING_MAIN_LOADER || type == WARNING_MAIN_FLOW;
-}
+  if (raw <= kLinearRaw[kLinearCount - 1]) {
+    for (int i = 0; i < kLinearCount - 1; ++i) {
+      const int raw0 = kLinearRaw[i];
+      const int raw1 = kLinearRaw[i + 1];
+      if (raw >= raw0 && raw <= raw1) {
+        const float d0 = kLinearDistMm[i];
+        const float d1 = kLinearDistMm[i + 1];
+        const float t = (raw - raw0) / static_cast<float>(raw1 - raw0);
+        return d0 + t * (d1 - d0);
+      }
+    }
+  }
 
-bool warning_is_loader_subtype(WarningType type) {
-  return type == WARNING_DISPLACED_BALE || type == WARNING_BROKEN_BALE ||
-         type == WARNING_SENSOR_STATUS;
-}
+  if (raw <= kExpRaw[0]) {
+    const int raw0 = kLinearRaw[kLinearCount - 1];
+    const int raw1 = kExpRaw[0];
+    const float d0 = kLinearDistMm[kLinearCount - 1];
+    const float d1 = kExpDistMm[0];
+    const float t = (raw - raw0) / static_cast<float>(raw1 - raw0);
+    return d0 + t * (d1 - d0);
+  }
 
-bool warning_is_flow_subtype(WarningType type) {
-  return type == WARNING_FEED_TIMEOUT;
+  for (int i = 0; i < kExpCount - 1; ++i) {
+    const int raw0 = kExpRaw[i];
+    const int raw1 = kExpRaw[i + 1];
+    if (raw >= raw0 && raw <= raw1) {
+      const float d0 = kExpDistMm[i];
+      const float d1 = kExpDistMm[i + 1];
+      const float k = logf(static_cast<float>(raw1) / raw0) / (d1 - d0);
+      return d0 + logf(static_cast<float>(raw) / raw0) / k;
+    }
+  }
+
+  return kMaxDistMm;
 }
 
 const char* warning_type_name(WarningType type) {
   switch (type) {
     case WARNING_NONE:
       return "none";
-    case WARNING_MAIN_LOADER:
-      return "main_loader";
-    case WARNING_MAIN_FLOW:
-      return "main_flow";
-    case WARNING_UNDEFINED:
-      return "undefined";
-    case WARNING_NO_SUB:
-      return "no_sub";
-    case WARNING_DISPLACED_BALE:
-      return "displaced_bale";
-    case WARNING_BROKEN_BALE:
-      return "broken_bale";
-    case WARNING_SENSOR_STATUS:
-      return "sensor_status";
+    case WARNING_LOW_COVERAGE:
+      return "low_coverage";
+    case WARNING_GAP_DETECTED:
+      return "gap_detected";
+    case WARNING_SENSOR_MISCONFIG:
+      return "sensor_misconfig";
+    case WARNING_RANGE_GROUP_BLIND_NEAR:
+      return "range_group_blind_near";
+    case WARNING_RANGE_GROUP_BLIND_FAR:
+      return "range_group_blind_far";
+    case WARNING_FLOW_END_DETECTING:
+      return "flow_end_detecting";
     case WARNING_FEED_TIMEOUT:
       return "feed_timeout";
   }
@@ -144,11 +163,7 @@ bool has_warn_status(WarningType type) {
     if (!g_warn_group.items[i].active) {
       continue;
     }
-    if (warning_is_main_type(type)) {
-      if (g_warn_group.items[i].mainType == type) {
-        return true;
-      }
-    } else if (g_warn_group.items[i].type == type) {
+    if (g_warn_group.items[i].type == type) {
       return true;
     }
   }
@@ -176,7 +191,6 @@ WarnStatus* alloc_warn_status(WarningType type) {
 
   WarnStatus* slot = &g_warn_group.items[g_warn_group.count++];
   slot->type = type;
-  slot->mainType = warning_main_type(type);
   slot->severity = SEVERITY_INFO;
   slot->prevWorkStatus = workStatus;
   slot->startMs = 0;
@@ -224,16 +238,14 @@ WorkStatus sensors_get_work_status() {
 void log_warn_status(const char* action, const WarnStatus& warn) {
   char msg[192] = {0};
   if (warn.message != nullptr) {
-    snprintf(msg, sizeof(msg), "warn=%s main=%s sev=%d prev=%s msg=%s",
+    snprintf(msg, sizeof(msg), "warn=%s sev=%d prev=%s msg=%s",
              warning_type_name(warn.type),
-             warning_type_name(warn.mainType),
              static_cast<int>(warn.severity),
              sensors_work_status_name(warn.prevWorkStatus),
              warn.message);
   } else {
-    snprintf(msg, sizeof(msg), "warn=%s main=%s sev=%d prev=%s",
+    snprintf(msg, sizeof(msg), "warn=%s sev=%d prev=%s",
              warning_type_name(warn.type),
-             warning_type_name(warn.mainType),
              static_cast<int>(warn.severity),
              sensors_work_status_name(warn.prevWorkStatus));
   }
@@ -252,7 +264,6 @@ void set_warn_status(WarningType type, WarningSeverity severity, const char* mes
 
   bool isNew = warn->startMs == 0;
   bool changed = !isNew && (warn->severity != severity || warn->message != message);
-  warn->mainType = warning_main_type(type);
   warn->severity = severity;
   warn->prevWorkStatus = workStatus;
   if (isNew) {
@@ -275,8 +286,7 @@ void clear_warn_status(WarningType type, const char* reason) {
       ++i;
       continue;
     }
-    bool match = warning_is_main_type(type) ? (warn->mainType == type) : (warn->type == type);
-    if (!match) {
+    if (warn->type != type) {
       ++i;
       continue;
     }
@@ -299,19 +309,6 @@ void clear_all_warn_status(const char* reason) {
     log_warn_status("clear", g_warn_group.items[i]);
   }
   g_warn_group.count = 0;
-}
-
-// Skeleton warning handlers (TODO: implement these when design is finalized)
-void handle_displaced_bale_warning() {
-  return;
-}
-
-void handle_broken_bale_warning() {
-  return;
-}
-
-void handle_sensor_status_warning() {
-  return;
 }
 
 void updateLoaderSensors(uint32_t now) {
@@ -433,7 +430,7 @@ void resetFlowTracking() {
   endDetectHoldMs = 0;
   endDetectStartMs = 0;
   s5ConfirmHoldMs = 0;
-  clear_warn_status(WARNING_MAIN_FLOW, "flow reset");
+  clear_warn_status(WARNING_FLOW_END_DETECTING, "flow reset");
   clear_warn_status(WARNING_FEED_TIMEOUT, "flow reset");
 }
 
@@ -452,8 +449,8 @@ void processWorkFlow(uint32_t now) {
     }
   }
 
-  bool sensorStatusActive = false;
-  const char* sensorStatusMsg = nullptr;
+  bool misconfigActive = false;
+  const char* misconfigMsg = nullptr;
 
   bool zone1Hold = updateHold(zone1Mismatch, now, T_MISMATCH_HOLD, &zone1MismatchHoldMs);
   bool zone2Hold = updateHold(zone2Mismatch, now, T_MISMATCH_HOLD, &zone2MismatchHoldMs);
@@ -477,30 +474,33 @@ void processWorkFlow(uint32_t now) {
   }
 
   if (zone1Hold) {
-    sensorStatusActive = true;
-    sensorStatusMsg = "zone1 mismatch (S1!=S3)";
+    misconfigActive = true;
+    misconfigMsg = "zone1 mismatch (S1!=S3)";
   } else if (zone2Hold) {
-    sensorStatusActive = true;
-    sensorStatusMsg = "zone2 mismatch (S2!=S4)";
+    misconfigActive = true;
+    misconfigMsg = "zone2 mismatch (S2!=S4)";
   } else if (ambigHold) {
-    sensorStatusActive = true;
-    sensorStatusMsg = "near/far ambiguous";
-  } else if (nearBlindHold) {
-    sensorStatusActive = true;
-    sensorStatusMsg = "near layer blind";
-  } else if (farBlindHold) {
-    sensorStatusActive = true;
-    sensorStatusMsg = "far layer blind";
+    misconfigActive = true;
+    misconfigMsg = "near/far ambiguous";
   }
 
-  if (sensorStatusActive) {
-    set_warn_status(WARNING_SENSOR_STATUS, SEVERITY_NORMAL, sensorStatusMsg);
+  if (misconfigActive) {
+    set_warn_status(WARNING_SENSOR_MISCONFIG, SEVERITY_NORMAL, misconfigMsg);
   } else {
-    clear_warn_status(WARNING_SENSOR_STATUS, "sensor status cleared");
+    clear_warn_status(WARNING_SENSOR_MISCONFIG, "misconfig cleared");
   }
 
-  bool brokenActive = false;
-  const char* brokenMsg = nullptr;
+  if (nearBlindHold) {
+    set_warn_status(WARNING_RANGE_GROUP_BLIND_NEAR, SEVERITY_NORMAL, "near layer blind");
+  } else {
+    clear_warn_status(WARNING_RANGE_GROUP_BLIND_NEAR, "near blind cleared");
+  }
+
+  if (farBlindHold) {
+    set_warn_status(WARNING_RANGE_GROUP_BLIND_FAR, SEVERITY_NORMAL, "far layer blind");
+  } else {
+    clear_warn_status(WARNING_RANGE_GROUP_BLIND_FAR, "far blind cleared");
+  }
 
   bool low2Hold = updateHold(coverage == 2, now, T_LOW_HOLD, &lowHold2Ms);
   bool low1Hold = updateHold(coverage <= 1, now, T_LOW_HOLD, &lowHold1Ms);
@@ -509,26 +509,23 @@ void processWorkFlow(uint32_t now) {
   bool gapHold = updateHold(gapCond, now, T_GAP_HOLD, &gapHoldMs);
 
   if (gapHold) {
-    brokenActive = true;
-    brokenMsg = "gap detected";
-  } else if (low1Hold) {
-    brokenActive = true;
-    brokenMsg = "low coverage<=1";
-  } else if (low2Hold) {
-    brokenActive = true;
-    brokenMsg = "low coverage=2";
+    set_warn_status(WARNING_GAP_DETECTED, SEVERITY_NORMAL, "gap detected");
+  } else {
+    clear_warn_status(WARNING_GAP_DETECTED, "gap cleared");
   }
 
-  if (brokenActive) {
-    set_warn_status(WARNING_BROKEN_BALE, SEVERITY_NORMAL, brokenMsg);
+  if (low1Hold) {
+    set_warn_status(WARNING_LOW_COVERAGE, SEVERITY_NORMAL, "low coverage<=1");
+  } else if (low2Hold) {
+    set_warn_status(WARNING_LOW_COVERAGE, SEVERITY_NORMAL, "low coverage=2");
   } else {
-    clear_warn_status(WARNING_BROKEN_BALE, "coverage recovered");
+    clear_warn_status(WARNING_LOW_COVERAGE, "coverage recovered");
   }
 
   if (workStatus == STATUS_ON_WORK) {
     if (updateHold(coverage == 0, now, T_END_DETECT_HOLD, &endDetectHoldMs)) {
       setWorkStatus(STATUS_END_DETECTION, "end detecting (coverage==0)");
-      set_warn_status(WARNING_MAIN_FLOW, SEVERITY_NORMAL, "end detecting (coverage==0)");
+      set_warn_status(WARNING_FLOW_END_DETECTING, SEVERITY_NORMAL, "end detecting (coverage==0)");
       endDetectStartMs = now;
       s5ConfirmHoldMs = 0;
     }
@@ -542,7 +539,7 @@ void processWorkFlow(uint32_t now) {
     if (wedgerEnabled()) {
       if (updateHold(wedgerDet, now, T_S5_CONFIRM_HOLD, &s5ConfirmHoldMs)) {
         setWorkStatus(STATUS_END, "S5 confirmed end");
-        clear_warn_status(WARNING_MAIN_FLOW, "S5 confirmed");
+        clear_warn_status(WARNING_FLOW_END_DETECTING, "S5 confirmed");
         clear_warn_status(WARNING_FEED_TIMEOUT, "S5 confirmed");
       }
     } else {
@@ -556,7 +553,7 @@ void processWorkFlow(uint32_t now) {
     endDetectStartMs = 0;
     s5ConfirmHoldMs = 0;
     if (coverage > 0) {
-      clear_warn_status(WARNING_MAIN_FLOW, "coverage restored");
+      clear_warn_status(WARNING_FLOW_END_DETECTING, "coverage restored");
       clear_warn_status(WARNING_FEED_TIMEOUT, "coverage restored");
     }
   }
@@ -571,8 +568,9 @@ void printStatus(uint32_t now) {
   }
   lastPrintMs = now;
 
-    int raw[4] = {loaderSensors[0].raw, loaderSensors[1].raw,
+        int raw[4] = {loaderSensors[0].raw, loaderSensors[1].raw,
           loaderSensors[2].raw, loaderSensors[3].raw};
+        float distMm[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     int thr[4] = {
       loaderSensors[0].enabled ? loaderSensors[0].threshold : -1,
       loaderSensors[1].enabled ? loaderSensors[1].threshold : -1,
@@ -586,6 +584,14 @@ void printStatus(uint32_t now) {
       loaderSensors[3].enabled,
     };
 
+    for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
+      if (!loaderSensors[i].enabled || loaderSensors[i].raw < 0) {
+        distMm[i] = -1.0f;
+      } else {
+        distMm[i] = estimateDistanceMm(loaderSensors[i].raw);
+      }
+    }
+
   logger_snapshot(sensors_work_status_name(workStatus),
                   coverage,
                   nearCount,
@@ -593,6 +599,7 @@ void printStatus(uint32_t now) {
                   zone1Mismatch,
                   zone2Mismatch,
                   raw,
+                  distMm,
                   thr,
                   get_warn_status_group(),
                   warning_type_name);
@@ -607,6 +614,7 @@ void printStatus(uint32_t now) {
               pairA_raw,
               pairB_raw,
               raw,
+              distMm,
               thr,
               enabled,
               get_warn_status_group(),

@@ -9,7 +9,7 @@
 constexpr size_t LOADER_SENSOR_COUNT = 4;
 
 constexpr int LOADER_PIN_1 = 10;
-constexpr int LOADER_PIN_2 = -1; // TBD
+constexpr int LOADER_PIN_2 = 11;
 constexpr int LOADER_PIN_3 = -1; // TBD
 constexpr int LOADER_PIN_4 = -1; // TBD
 
@@ -28,7 +28,7 @@ constexpr int LOADER_PINS[LOADER_SENSOR_COUNT] = {
 // ============================
 
 // Timing (ms)
-constexpr uint32_t PRINT_PERIOD_MS = 500;
+constexpr uint32_t PRINT_PERIOD_MS = 50;
 constexpr uint32_t SAMPLE_INTERVAL_MS = 5;
 constexpr uint32_t FEED_PROCESS_TIME_MS = 18000;
 

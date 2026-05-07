@@ -1,0 +1,4 @@
+# Local logs and test artifacts
+/log/
+/dis_test/
+/.venv/

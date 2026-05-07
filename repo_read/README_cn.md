@@ -10,6 +10,10 @@
 - sensor.h: 传感器模块接口（GPIO 映射、枚举、公开 API）
 - sensor.cpp: 传感器模块实现（流程与状态机）
 - warning.h: warning 系统类型与 API（与传感器模块解耦）
+- logger.h: 结构化日志接口（session/event/snapshot/CSV）
+- logger.cpp: 结构化日志实现
+- wheels.h: 轮子控制接口（H 桥驱动、主动/被动组、速度优先逻辑）
+- wheels.cpp: 轮子控制实现（前进/后退/停止框架）
 - emb_system.md: 系统级硬件说明
 - TODO.md: 下一步工程任务清单
 
@@ -36,11 +40,15 @@ sensor.cpp 内的运行状态机包含：
 Warning 已与 `WorkStatus` 解耦，使用分组的 `WarnStatus` 系统建模。这样可以让传感器问题、流程超时等短暂警告不影响主状态机，同时允许多个 warning 并行存在。
 
 关键概念：
-- `WarningType`: 包含主类（`WARNING_MAIN_LOADER`, `WARNING_MAIN_FLOW`）和子类（`WARNING_DISPLACED_BALE`, `WARNING_BROKEN_BALE`, `WARNING_SENSOR_STATUS`, `WARNING_FEED_TIMEOUT`）。
-  - 占位类型：`WARNING_UNDEFINED`（子类不明确）与 `WARNING_NO_SUB`（主类无子类）。
-- `warning_main_type()`: 子类映射回主类，并处理误分类情况。
-- `warning_is_main_type()`, `warning_is_loader_subtype()`, `warning_is_flow_subtype()`: 类型判断辅助函数。
-- `WarnStatus`: 运行时结构体，记录 warning 类型、主类、严重性、上一次 `WorkStatus`、时间戳与消息。
+- `WarningType`: 六个独立类别：
+   - `WARNING_LOW_COVERAGE`
+   - `WARNING_GAP_DETECTED`
+   - `WARNING_SENSOR_MISCONFIG`
+   - `WARNING_RANGE_GROUP_BLIND_NEAR`
+   - `WARNING_RANGE_GROUP_BLIND_FAR`
+   - `WARNING_FLOW_END_DETECTING`
+   - `WARNING_FEED_TIMEOUT`
+- `WarnStatus`: 运行时结构体，记录 warning 类型、严重性、上一次 `WorkStatus`、时间戳与消息。
 - `WarnStatusGroup`: 固定容量的 warning 列表，支持多个 warning 并行存在。
 - `WarningSeverity`: warning 严重级别，与 warning 类型独立。
 
@@ -51,21 +59,48 @@ Warning 已与 `WorkStatus` 解耦，使用分组的 `WarnStatus` 系统建模�
 
 状态/警告示例：
 - `STATUS_ON_WORK` + `WARNING_NONE`: 正常运行。
-- `STATUS_ON_WORK` + `WARNING_MAIN_LOADER`: loader 层 warning，可包含子类。
-- `STATUS_ON_WORK` + `WARNING_MAIN_FLOW`: 流程相关 warning，例如 end detection 延迟。
+- `STATUS_ON_WORK` + `WARNING_SENSOR_MISCONFIG`: zone mismatch 或 near/far 歧义。
+- `STATUS_ON_WORK` + `WARNING_RANGE_GROUP_BLIND_NEAR`: 近层盲区。
 - `STATUS_END_DETECTION` + `WARNING_FEED_TIMEOUT`: 末端超时但 wedger 仍未确认完成。
+
+## 日志输出（session/event/snapshot/CSV）
+日志采用结构化输出，便于从 Serial Monitor 复制到本地 `log/` 文件夹保存。
+
+格式说明：
+- `[SESSION]` 启动头，包含构建时间与推荐文件名。
+- `[EVT]` 状态变化与 warning set/clear 事件。
+- `[SNAP]` 周期性状态快照。
+- `[CSV_HEADER]` + `[CSV]` 用于表格化存档。
+
+## 轮子控制（wheels）
+轮子模块用于 H 桥驱动的双组马达控制，分为主动组与被动组：
+- 主动组：速度优先，控制整体速度与方向。
+- 被动组：只需能转即可，默认用较低 PWM 保持转动。
+
+目前代码仅提供前进/后退/停止框架，GPIO 与电机接口为 TBD：
+- 头文件： [bake/wheels.h](bake/wheels.h)
+- 实现文件： [bake/wheels.cpp](bake/wheels.cpp)
+
+后续需要补充：
+- H 桥驱动引脚映射
+- 主动/被动组具体轮位（前/后 或 左/右）
+- 被动组最低可转 PWM 与方向一致性验证
 
 ## 运行流程（当前）
 1. 程序从 not_start 启动。
-2. 任意 loader 传感器第一次检测到草料（raw < threshold）后进入 on_work。
-3. 在配置足够传感器时，loader 传感器会被分为 near/far 分组。
-4. 每个 loader 传感器执行 warning 逻辑：
-   - raw > threshold 持续 2500 ms -> warning
-   - raw < threshold 持续 1000 ms -> warning 清除
-5. 当所有 loader 传感器都检测到无草料，喂料计时开始。
-6. 超过 FEED_PROCESS_TIME_MS（当前 18000 ms）后：
-   - 如果 wedger 传感器 raw < wedger_threshold -> warning_work 并继续
-   - 否则 -> end
+2. coverage >= 2 持续 T_START_HOLD 后进入 on_work。
+3. 每次采样计算 coverage 和 zone 一致性：
+   - coverage = det1 + det2 + det3 + det4
+   - zone mismatch: (S1 vs S3), (S2 vs S4)
+4. 物理配对固定，但 near/far 动态判断：
+   - pairA = (S1,S2), pairB = (S3,S4)
+   - 使用阈值带判断 near/far（NEAR_THRESHOLD / FAR_THRESHOLD_MIN/MAX）
+5. warning 由持续条件触发：
+   - zone mismatch、near/far 歧义、range blind
+   - coverage 过低 / gap 检测
+6. end 检测流程：
+   - coverage == 0 持续 T_END_DETECT_HOLD -> STATUS_END_DETECTION + WARNING_FLOW_END_DETECTING
+   - END_DETECTION 内等待 S5（如可用），超过 T_FEED_PROCESS 则超时警告
 
 ## 模块接口
 - bake.ino 保留 Arduino 的 setup/loop。
@@ -82,6 +117,8 @@ Warning 已与 `WorkStatus` 解耦，使用分组的 `WarnStatus` 系统建模�
 - FAR_THRESHOLD_MIN / FAR_THRESHOLD_MAX
 - WEDGER_THRESHOLD
 - FEED_PROCESS_TIME_MS
+- T_START_HOLD / T_LOW_HOLD / T_MISMATCH_HOLD / T_RANGE_BLIND_HOLD
+- T_GAP_HOLD / T_END_DETECT_HOLD / T_FEED_PROCESS / T_S5_CONFIRM_HOLD
 
 ## 重构说明（warning 分离）
 warning 系统已拆分为独立头文件，减少与传感器模块的耦合。
@@ -89,8 +126,8 @@ warning 系统已拆分为独立头文件，减少与传感器模块的耦合。
 关键点：
 - `warning.h` 负责 `WorkStatus`, `WarningType`, `WarningSeverity`, `WarnStatus`, `WarnStatusGroup`。
 - `sensor.h` 通过 include 引入 warning 类型，聚焦传感器配置与公开接口。
-- `sensor.cpp` 保留全部实现，并显式包含 `warning.h` 以保证依赖清晰。
+- `sensor.cpp` 保留全部实现。
 
 ## 备注
-- 目前仅配置了 loader_1，因此自动分组是部分模式。
-- 一旦全部引脚确定，请直接在 sensor.h 中设置并重新校准。
+- 目前仅配置了 loader_1，因此 coverage 逻辑是部分模式。
+- 一旦全部引脚确定，请直接在 sensor.h 中设置并重新测试。
