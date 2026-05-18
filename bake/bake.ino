@@ -8,10 +8,12 @@ void setup() {
   sensors_setup();
   // wedger_setup();
   // wheels_setup();
+  // motor_setup();
 }
 
 void loop() {
   sensors_loop();
   // wedger_loop();
   // wheels_loop();
+  // motor_loop();
 }

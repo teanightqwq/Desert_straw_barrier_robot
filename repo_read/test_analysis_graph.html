@@ -14,6 +14,7 @@
       --near: #1d6a3f;
       --clk: #f3c43b;
       --aclk: #f28c28;
+      --empty: #8d8d8d;
     }
 
     * { box-sizing: border-box; }
@@ -98,9 +99,10 @@
         <span><i style="background: var(--near)"></i>near_stab (near threshold)</span>
         <span><i style="background: var(--clk)"></i>clk_turn (clockwise)</span>
         <span><i style="background: var(--aclk)"></i>aclk_turn (counter-clockwise)</span>
+        <span><i style="background: var(--empty)"></i>empty (no straw)</span>
       </div>
       <canvas id="chart" width="1100" height="520"></canvas>
-      <div class="note">Missing values are filled by a per-point mean over the previous 30 samples (or next 30 at the start). Raw values above 2000 are treated as missing before conversion.</div>
+      <div class="note">Missing values are filled by a per-point mean over the previous 30 samples (or next 30 at the start). Raw values above 2000 are treated as missing before conversion. Empty series is generated in JS as a seeded random distance line within the observed range.</div>
     </div>
   </div>
 
@@ -112,6 +114,7 @@
       near_stab: getComputedStyle(document.documentElement).getPropertyValue('--near').trim(),
       clk_turn: getComputedStyle(document.documentElement).getPropertyValue('--clk').trim(),
       aclk_turn: getComputedStyle(document.documentElement).getPropertyValue('--aclk').trim(),
+      empty: getComputedStyle(document.documentElement).getPropertyValue('--empty').trim(),
     };
 
     const canvas = document.getElementById('chart');
@@ -128,12 +131,84 @@
     const yMin = 0.0;
     const yMax = 4.0;
 
+    const emptySeedRaw = [3087, 3053, 3003, 2943, 2911, 2942, 2950, 2968, 2915, 2910, 2927, 2926, 3005, 3000, 3007, 3007, 2997, 2984];
+
+    const linearDist = [0.3, 0.5, 0.7, 1.0, 1.2, 1.5, 2.0, 2.3, 2.4, 2.5];
+    const linearRaw = [105, 115, 125, 135, 150, 160, 200, 211, 295, 305];
+    const expDist = [2.7, 2.9, 3.0, 3.5, 4.0];
+    const expRaw = [530, 920, 1250, 1500, 2465];
+
+    function estimateDistance(rawVal) {
+      if (!Number.isFinite(rawVal)) {
+        return yMin;
+      }
+      if (rawVal <= linearRaw[0]) {
+        return yMin;
+      }
+      if (rawVal >= expRaw[expRaw.length - 1]) {
+        return yMax;
+      }
+      if (rawVal <= linearRaw[linearRaw.length - 1]) {
+        for (let i = 0; i < linearRaw.length - 1; i += 1) {
+          const r0 = linearRaw[i];
+          const r1 = linearRaw[i + 1];
+          if (rawVal >= r0 && rawVal <= r1) {
+            const d0 = linearDist[i];
+            const d1 = linearDist[i + 1];
+            const t = (rawVal - r0) / (r1 - r0);
+            return d0 + t * (d1 - d0);
+          }
+        }
+      }
+      if (rawVal <= expRaw[0]) {
+        const r0 = linearRaw[linearRaw.length - 1];
+        const r1 = expRaw[0];
+        const d0 = linearDist[linearDist.length - 1];
+        const d1 = expDist[0];
+        const t = (rawVal - r0) / (r1 - r0);
+        return d0 + t * (d1 - d0);
+      }
+      for (let i = 0; i < expRaw.length - 1; i += 1) {
+        const r0 = expRaw[i];
+        const r1 = expRaw[i + 1];
+        if (rawVal >= r0 && rawVal <= r1) {
+          const d0 = expDist[i];
+          const d1 = expDist[i + 1];
+          const k = Math.log(r1 / r0) / (d1 - d0);
+          return d0 + Math.log(rawVal / r0) / k;
+        }
+      }
+      return yMin;
+    }
+
+    function seededRandom(seed) {
+      let state = seed >>> 0;
+      return () => {
+        state = (state * 1664525 + 1013904223) >>> 0;
+        return state / 4294967296;
+      };
+    }
+
+    function buildEmptySeries() {
+      const minRaw = Math.min(...emptySeedRaw);
+      const maxRaw = Math.max(...emptySeedRaw);
+      const rand = seededRandom(20260507);
+      return times.map(() => {
+        const raw = minRaw + rand() * (maxRaw - minRaw);
+        return estimateDistance(raw);
+      });
+    }
+
+    data.series.empty = buildEmptySeries();
+
+    const yAxisMax = estimateDistance(3500);
+
     function xToPx(x) {
       return padding.left + ((x - xMin) / (xMax - xMin)) * width;
     }
 
     function yToPx(y) {
-      return padding.top + (1 - (y - yMin) / (yMax - yMin)) * height;
+      return padding.top + (1 - (y - yMin) / (yAxisMax - yMin)) * height;
     }
 
     function drawGrid() {
@@ -142,7 +217,7 @@
       ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--grid');
 
       // Horizontal grid every 0.2 mm
-      for (let y = yMin; y <= yMax + 1e-9; y += 0.2) {
+      for (let y = yMin; y <= yAxisMax + 1e-9; y += 0.2) {
         const py = yToPx(y);
         ctx.beginPath();
         ctx.moveTo(padding.left, py);
@@ -175,7 +250,7 @@
       ctx.font = '12px "IBM Plex Sans", sans-serif';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      for (let y = yMin; y <= yMax + 1e-9; y += 0.2) {
+      for (let y = yMin; y <= yAxisMax + 1e-9; y += 0.2) {
         const py = yToPx(y);
         ctx.fillText(y.toFixed(1), padding.left - 8, py);
       }
@@ -195,11 +270,11 @@
     function drawLine(name) {
       const values = data.series[name];
       ctx.strokeStyle = colors[name];
-      ctx.lineWidth = 2.4;
+      ctx.lineWidth = name === 'empty' ? 1.8 : 2.4;
       ctx.beginPath();
       values.forEach((v, i) => {
         const x = xToPx(times[i]);
-        const y = yToPx(Math.min(yMax, Math.max(yMin, v)));
+        const y = yToPx(Math.min(yAxisMax, Math.max(yMin, v)));
         if (i === 0) {
           ctx.moveTo(x, y);
         } else {
@@ -215,6 +290,7 @@
     drawLine('near_stab');
     drawLine('clk_turn');
     drawLine('aclk_turn');
+    drawLine('empty');
   </script>
 </body>
 </html>
