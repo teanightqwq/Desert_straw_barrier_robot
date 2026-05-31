@@ -1,7 +1,8 @@
 # TODO
 
 ## Hardware Mapping
-- [x] Confirm loader_1 pin is GPIO10
+- [ ] Resolve loader sensor pins after motor wiring (GPIO10/11 conflict)
+- [ ] Fill loader_1 pin in sensor.cpp
 - [ ] Fill loader_2 pin in sensor.cpp
 - [ ] Fill loader_3 pin in sensor.cpp
 - [ ] Fill loader_4 pin in sensor.cpp
@@ -22,6 +23,11 @@
 - [ ] Integrate completion signal with future wedger.cpp
 - [ ] Define final handoff protocol between feeder and wedger modules
 - [ ] Add wheels control calls in bake.ino (setup/loop integration)
+
+## Motor Control
+- [x] Add basic PWM motor driver (A/B/C) with LEDC
+- [x] Integrate motor setup/loop in bake.ino
+- [x] Add start-compatible direction flip for Motor A
 
 ## Warning System Work
 - [x] Formalize `WarnStatus` struct in `warning.h` (type, mainType, severity, prevWorkStatus, startMs, lastLogMs, message, active)

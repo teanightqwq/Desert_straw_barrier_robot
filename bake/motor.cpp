@@ -1,153 +1,97 @@
 #include "motor.h"
+#include "logger.h"
 
-static bool is_valid_pin(int pin) {
-  return pin >= 0;
+static int g_a_dir = 1;
+
+static int clamp_speed(int speed) {
+  if (speed < 0) return 0;
+  if (speed > MOTOR_PWM_MAX) return MOTOR_PWM_MAX;
+  return speed;
 }
 
-static void setup_motor_pins(const MotorPins& pins) {
-  if (!is_valid_pin(pins.in1) || !is_valid_pin(pins.in2)) {
-    return;
-  }
-  pinMode(pins.in1, OUTPUT);
-  pinMode(pins.in2, OUTPUT);
-  if (is_valid_pin(pins.en)) {
-    pinMode(pins.en, OUTPUT);
-    analogWrite(pins.en, 0);
-  }
-  digitalWrite(pins.in1, LOW);
-  digitalWrite(pins.in2, LOW);
-}
+static void write_motor(int in1, int in2, int pwm_pin, int dir, int speed) {
+  int pwm = clamp_speed(speed);
 
-FeederMotorController::FeederMotorController(const FeederMotorConfig& cfg)
-    : cfg_(cfg),
-      prevStatus_(STATUS_NOT_START),
-      currentDir_(MotorDir::Cw),
-      startMs_(0),
-      startupDone_(false),
-      sawStraw_(false) {}
-
-void FeederMotorController::begin() {
-  setup_motor_pins(cfg_.motor1);
-  setup_motor_pins(cfg_.motor2);
-  setup_motor_pins(cfg_.motor3);
-}
-
-void FeederMotorController::update(WorkStatus status, bool strawDetected) {
-  uint32_t now = millis();
-
-  if (status != STATUS_ON_WORK) {
-    stop_all();
-    prevStatus_ = status;
-    startMs_ = 0;
-    startupDone_ = false;
-    sawStraw_ = false;
-    currentDir_ = MotorDir::Cw;
+  if (dir == 0 || pwm == 0) {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
+    analogWrite(pwm_pin, 0);
     return;
   }
 
-  if (prevStatus_ != STATUS_ON_WORK) {
-    reset_startup_state(now);
+  if (dir > 0) {
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+  } else {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, HIGH);
   }
 
-  if (strawDetected) {
-    sawStraw_ = true;
-  }
-
-  if (!startupDone_ && (now - startMs_ >= cfg_.startupCheckMs)) {
-    if (!sawStraw_) {
-      currentDir_ = (currentDir_ == MotorDir::Cw) ? MotorDir::Ccw : MotorDir::Cw;
-    }
-    startupDone_ = true;
-  }
-
-  drive_on_work();
-  prevStatus_ = status;
+  analogWrite(pwm_pin, pwm);
 }
 
-void FeederMotorController::stop_all() {
-  set_motor(cfg_.motor1, MotorDir::Stop, 0);
-  set_motor(cfg_.motor2, MotorDir::Stop, 0);
-  set_motor(cfg_.motor3, MotorDir::Stop, 0);
+static void apply_targets(int a_speed, int a_dir) {
+  int a_pwm = clamp_speed(a_speed);
+  int a_direction = (a_dir > 0) ? 1 : (a_dir < 0 ? -1 : 0);
+
+  int b_pwm = clamp_speed(static_cast<int>(a_pwm * B_SPEED_SCALE + 0.5f));
+  int b_direction = (a_direction == 0) ? 0 : a_direction;
+
+  int c_pwm = clamp_speed(static_cast<int>(a_pwm * C_SPEED_SCALE + 0.5f));
+  int c_direction = (c_pwm == 0) ? 0 : -1;
+
+  write_motor(MOTOR_AIN1, MOTOR_AIN2, MOTOR_APWM, a_direction, a_pwm);
+  write_motor(MOTOR_BIN1, MOTOR_BIN2, MOTOR_BPWM, b_direction, b_pwm);
+  write_motor(MOTOR_CIN1, MOTOR_CIN2, MOTOR_CPWM, c_direction, c_pwm);
 }
-
-void FeederMotorController::set_motor(const MotorPins& pins, MotorDir dir, int pwm) {
-  if (!is_valid_pin(pins.in1) || !is_valid_pin(pins.in2)) {
-    return;
-  }
-
-  switch (dir) {
-    case MotorDir::Cw:
-      digitalWrite(pins.in1, HIGH);
-      digitalWrite(pins.in2, LOW);
-      break;
-    case MotorDir::Ccw:
-      digitalWrite(pins.in1, LOW);
-      digitalWrite(pins.in2, HIGH);
-      break;
-    case MotorDir::Stop:
-    default:
-      digitalWrite(pins.in1, LOW);
-      digitalWrite(pins.in2, LOW);
-      break;
-  }
-
-  if (is_valid_pin(pins.en)) {
-    analogWrite(pins.en, pwm);
-  }
-}
-
-void FeederMotorController::drive_on_work() {
-  int motor1_pwm = constrain(cfg_.motor1Pwm, 0, cfg_.pwmMax);
-  int motor2_pwm = motor2_pwm(motor1_pwm);
-  int motor3_pwm = motor3_pwm(motor1_pwm);
-
-  set_motor(cfg_.motor1, currentDir_, motor1_pwm);
-  set_motor(cfg_.motor2, currentDir_, motor2_pwm);
-  set_motor(cfg_.motor3, MotorDir::Cw, motor3_pwm);
-}
-
-void FeederMotorController::reset_startup_state(uint32_t now) {
-  startMs_ = now;
-  startupDone_ = false;
-  sawStraw_ = false;
-  currentDir_ = MotorDir::Cw;
-}
-
-int FeederMotorController::motor2_pwm(int motor1Pwm) const {
-  int pwm = static_cast<int>(motor1Pwm * cfg_.motor2Ratio);
-  return constrain(pwm, 0, cfg_.pwmMax);
-}
-
-int FeederMotorController::motor3_pwm(int motor1Pwm) const {
-  int pwm = static_cast<int>(motor1Pwm * cfg_.motor3Ratio);
-  return constrain(pwm, 0, cfg_.pwmMax);
-}
-
-// ---- Example wiring (TBD) ----
-static const FeederMotorConfig kFeederMotorConfig = {
-    // motor1 (AT8236 or TB6612) pins
-    {-1, -1, -1},
-    // motor2 (AT8236 or TB6612) pins
-    {-1, -1, -1},
-    // motor3 (AT8236 or TB6612) pins
-    {-1, -1, -1},
-    255,
-    200,
-    0.9f,
-    0.7f,
-    3000,
-};
-
-static FeederMotorController feederMotors(kFeederMotorConfig);
 
 void motor_setup() {
-  feederMotors.begin();
+  pinMode(MOTOR_AIN1, OUTPUT);
+  pinMode(MOTOR_AIN2, OUTPUT);
+  pinMode(MOTOR_BIN1, OUTPUT);
+  pinMode(MOTOR_BIN2, OUTPUT);
+  pinMode(MOTOR_CIN1, OUTPUT);
+  pinMode(MOTOR_CIN2, OUTPUT);
+  pinMode(MOTOR_APWM, OUTPUT);
+  pinMode(MOTOR_BPWM, OUTPUT);
+  pinMode(MOTOR_CPWM, OUTPUT);
+
+  analogWriteResolution(MOTOR_APWM, MOTOR_PWM_RES_BITS);
+  analogWriteResolution(MOTOR_BPWM, MOTOR_PWM_RES_BITS);
+  analogWriteResolution(MOTOR_CPWM, MOTOR_PWM_RES_BITS);
+
+  apply_targets(DEFAULT_A_SPEED, g_a_dir);
+
+  char msg[180] = {0};
+  snprintf(msg,
+           sizeof(msg),
+           "A(%d,%d,%d) B(%d,%d,%d) C(%d,%d,%d) defA=%d bScale=%.2f cScale=%.2f",
+           MOTOR_AIN1,
+           MOTOR_AIN2,
+           MOTOR_APWM,
+           MOTOR_BIN1,
+           MOTOR_BIN2,
+           MOTOR_BPWM,
+           MOTOR_CIN1,
+           MOTOR_CIN2,
+           MOTOR_CPWM,
+           DEFAULT_A_SPEED,
+           static_cast<double>(B_SPEED_SCALE),
+           static_cast<double>(C_SPEED_SCALE));
+  logger_event("motor_boot", msg);
 }
 
-void motor_loop(WorkStatus status, bool strawDetected) {
-  feederMotors.update(status, strawDetected);
+void motor_loop() {
+  apply_targets(DEFAULT_A_SPEED, g_a_dir);
 }
 
-void motor_stop() {
-  feederMotors.stop_all();
+void motor_set_a_dir(int a_dir) {
+  int next = (a_dir > 0) ? 1 : (a_dir < 0 ? -1 : 0);
+  if (g_a_dir == next) {
+    return;
+  }
+  g_a_dir = next;
+  char msg[64] = {0};
+  snprintf(msg, sizeof(msg), "dirA=%d", g_a_dir);
+  logger_event("motor_dir", msg);
 }

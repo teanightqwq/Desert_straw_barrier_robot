@@ -2,57 +2,37 @@
 #define MOTOR_H
 
 #include <Arduino.h>
-#include "warning.h"
 
-struct MotorPins {
-  int in1;
-  int in2;
-  int en; // PWM enable (set to -1 if not used)
-};
+// Motor GPIO mapping (ESP32-S3)
+constexpr int MOTOR_AIN1 = 4;
+constexpr int MOTOR_AIN2 = 5;
+constexpr int MOTOR_APWM = 6;
 
-enum class MotorDir {
-  Cw,
-  Ccw,
-  Stop
-};
+constexpr int MOTOR_BIN1 = 9;
+constexpr int MOTOR_BIN2 = 10;
+constexpr int MOTOR_BPWM = 11;
 
-struct FeederMotorConfig {
-  MotorPins motor1;
-  MotorPins motor2;
-  MotorPins motor3;
-  int pwmMax;
-  int motor1Pwm;
-  float motor2Ratio;
-  float motor3Ratio;
-  uint32_t startupCheckMs;
-};
+constexpr int MOTOR_CIN1 = 15;
+constexpr int MOTOR_CIN2 = 16;
+constexpr int MOTOR_CPWM = 17;
 
-class FeederMotorController {
- public:
-  explicit FeederMotorController(const FeederMotorConfig& cfg);
+// PWM config
+constexpr int MOTOR_PWM_FREQ_HZ = 20000;
+constexpr int MOTOR_PWM_RES_BITS = 12;
+constexpr int MOTOR_PWM_MAX = 4095;
 
-  void begin();
-  void update(WorkStatus status, bool strawDetected);
-  void stop_all();
+constexpr int MOTOR_PWM_CH_A = 0;
+constexpr int MOTOR_PWM_CH_B = 1;
+constexpr int MOTOR_PWM_CH_C = 2;
 
- private:
-  void set_motor(const MotorPins& pins, MotorDir dir, int pwm);
-  void drive_on_work();
-  void reset_startup_state(uint32_t now);
-  int motor2_pwm(int motor1Pwm) const;
-  int motor3_pwm(int motor1Pwm) const;
+// Speed config (0..MOTOR_PWM_MAX)
+constexpr int DEFAULT_A_SPEED = MOTOR_PWM_MAX;
+constexpr float B_SPEED_SCALE = 1.0f;
+constexpr float C_SPEED_SCALE = 1.0f;
 
-  FeederMotorConfig cfg_;
-  WorkStatus prevStatus_;
-  MotorDir currentDir_;
-  uint32_t startMs_;
-  bool startupDone_;
-  bool sawStraw_;
-};
-
-// Optional hooks for integration
 void motor_setup();
-void motor_loop(WorkStatus status, bool strawDetected);
-void motor_stop();
+void motor_loop();
+void motor_set_a_dir(int a_dir);
+
 
 #endif // MOTOR_H

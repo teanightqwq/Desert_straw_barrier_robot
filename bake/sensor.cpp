@@ -1,5 +1,6 @@
 #include "sensor.h"
 #include "logger.h"
+#include "motor.h"
 
 struct LoaderSensorState {
   int pin;
@@ -60,6 +61,9 @@ static uint32_t endDetectHoldMs = 0;
 static uint32_t endDetectStartMs = 0;
 static uint32_t s5ConfirmHoldMs = 0;
 static uint32_t nearFarAmbigHoldMs = 0;
+static uint32_t startCompatibleStartMs = 0;
+static bool startCompatibleDone = false;
+static WorkStatus prevWorkStatus = STATUS_NOT_START;
 
 bool hasValidPin(int pin) {
   return pin >= 0;
@@ -86,6 +90,15 @@ bool inNearBand(int raw) {
 
 bool inFarBand(int raw) {
   return raw >= FAR_THRESHOLD_MIN && raw <= FAR_THRESHOLD_MAX;
+}
+
+static bool any_loader_enabled() {
+  for (size_t i = 0; i < LOADER_SENSOR_COUNT; ++i) {
+    if (loaderSensors[i].enabled) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static float estimateDistanceMm(int raw) {
@@ -449,6 +462,23 @@ void processWorkFlow(uint32_t now) {
     }
   }
 
+  if (prevWorkStatus == STATUS_NOT_START && workStatus == STATUS_ON_WORK && any_loader_enabled()) {
+    startCompatibleStartMs = now;
+    startCompatibleDone = false;
+  }
+
+  if (workStatus == STATUS_ON_WORK && startCompatibleStartMs != 0 && !startCompatibleDone) {
+    if (coverage > 0) {
+      startCompatibleDone = true;
+    }
+    if (now - startCompatibleStartMs >= START_COMPATIBLE_TIME_MS) {
+      if (coverage == 0) {
+        motor_set_a_dir(-1);
+      }
+      startCompatibleDone = true;
+    }
+  }
+
   bool misconfigActive = false;
   const char* misconfigMsg = nullptr;
 
@@ -559,6 +589,7 @@ void processWorkFlow(uint32_t now) {
   }
 
   prevCoverage = coverage;
+  prevWorkStatus = workStatus;
 }
 
 void printStatus(uint32_t now) {

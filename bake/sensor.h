@@ -5,11 +5,11 @@
 #include "warning.h"
 
 // Loader sensor count and GPIO mapping.
-// Known pin: loader_1 -> GPIO10.
+// TODO: update loader sensor GPIO after motor wiring finalized.
 constexpr size_t LOADER_SENSOR_COUNT = 4;
 
-constexpr int LOADER_PIN_1 = 10;
-constexpr int LOADER_PIN_2 = 11;
+constexpr int LOADER_PIN_1 = -1;
+constexpr int LOADER_PIN_2 = -1;
 constexpr int LOADER_PIN_3 = -1; // TBD
 constexpr int LOADER_PIN_4 = -1; // TBD
 
@@ -41,6 +41,9 @@ constexpr uint32_t T_GAP_HOLD = 800;
 constexpr uint32_t T_END_DETECT_HOLD = 2000;
 constexpr uint32_t T_FEED_PROCESS = FEED_PROCESS_TIME_MS;
 constexpr uint32_t T_S5_CONFIRM_HOLD = 1000;
+
+// Motor start compatibility (ms)
+constexpr uint32_t START_COMPATIBLE_TIME_MS = 7000;
 
 // Thresholds
 constexpr int NEAR_THRESHOLD = 300;

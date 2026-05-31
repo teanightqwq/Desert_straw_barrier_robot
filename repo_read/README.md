@@ -12,21 +12,38 @@ The current focus is infrared analog sensing on ESP32-S3 for loader-to-feeder an
 - warning.h: Warning system types and APIs (separated from sensor module)
 - logger.h: Structured logging helpers (session/event/snapshot/CSV)
 - logger.cpp: Structured logging implementation
+- motor.h: Feeder motor control interface (A/B/C)
+- motor.cpp: Feeder motor control implementation (analogWrite PWM)
 - wheels.h: Wheel control interface (H-bridge driver, active/passive groups, speed priority)
 - wheels.cpp: Wheel control implementation (forward/backward/stop framework)
 - emb_system.md: System-level hardware notes
 - TODO.md: Action list for next engineering steps
 
 ## Current Pin Plan
-Only one loader sensor pin is fixed right now.
+Loader sensor pins are temporarily disabled due to motor wiring conflicts.
 
 | Sensor | Role | Pin |
 |---|---|---|
-| loader_1 | Loader sensor (known) | GPIO10 |
+| loader_1 | Loader sensor | TBD |
 | loader_2 | Loader sensor | TBD |
 | loader_3 | Loader sensor | TBD |
 | loader_4 | Loader sensor | TBD |
 | wedger_sensor | Feeder-to-wedger check sensor | TBD |
+
+## Motor Control (feeder)
+The motor module drives three motors with analogWrite PWM on ESP32-S3:
+- Motor A: top right (primary tuning)
+- Motor B: top left (follows A, scaled)
+- Motor C: bottom transport (CW only, scaled)
+
+Start-compatible rule:
+- After STATUS_NOT_START -> STATUS_ON_WORK, if any loader sensor GPIO is enabled and coverage stays 0 for START_COMPATIBLE_TIME_MS, Motor A direction flips once (Motor B follows A).
+
+| Motor | IN1 | IN2 | PWM |
+|---|---|---|---|
+| A | GPIO4 | GPIO5 | GPIO6 |
+| B | GPIO9 | GPIO10 | GPIO11 |
+| C | GPIO15 | GPIO16 | GPIO17 |
 
 ## Work Status Enum
 The runtime status machine in sensor.cpp uses:

@@ -12,21 +12,38 @@
 - warning.h: warning 系统类型与 API（与传感器模块解耦）
 - logger.h: 结构化日志接口（session/event/snapshot/CSV）
 - logger.cpp: 结构化日志实现
+- motor.h: 送料电机控制接口（A/B/C）
+- motor.cpp: 送料电机控制实现（analogWrite PWM）
 - wheels.h: 轮子控制接口（H 桥驱动、主动/被动组、速度优先逻辑）
 - wheels.cpp: 轮子控制实现（前进/后退/停止框架）
 - emb_system.md: 系统级硬件说明
 - TODO.md: 下一步工程任务清单
 
 ## 当前引脚规划
-目前仅确定一个 loader 传感器引脚。
+loader 传感器引脚因电机接线冲突暂时禁用。
 
 | 传感器 | 角色 | 引脚 |
 |---|---|---|
-| loader_1 | Loader 传感器（已确定） | GPIO10 |
+| loader_1 | Loader 传感器 | TBD |
 | loader_2 | Loader 传感器 | TBD |
 | loader_3 | Loader 传感器 | TBD |
 | loader_4 | Loader 传感器 | TBD |
 | wedger_sensor | Feeder-to-wedger 检测传感器 | TBD |
+
+## 送料电机控制（motor）
+电机模块使用 ESP32-S3 的 analogWrite PWM 驱动三路电机：
+- Motor A: 上右（主调速）
+- Motor B: 上左（跟随 A，比例缩放）
+- Motor C: 下方输送（仅 CW，比例缩放）
+
+启动兼容规则：
+- 当 STATUS_NOT_START -> STATUS_ON_WORK 后，如果至少一个 loader GPIO 启用且 coverage 在 START_COMPATIBLE_TIME_MS 内仍为 0，则 Motor A 方向仅翻转一次（Motor B 跟随 A）。
+
+| 电机 | IN1 | IN2 | PWM |
+|---|---|---|---|
+| A | GPIO4 | GPIO5 | GPIO6 |
+| B | GPIO9 | GPIO10 | GPIO11 |
+| C | GPIO15 | GPIO16 | GPIO17 |
 
 ## Work Status 枚举
 sensor.cpp 内的运行状态机包含：
