@@ -1,7 +1,7 @@
 #include "motor.h"
 #include "logger.h"
 
-static int g_a_dir = 1;
+static int g_a_dir = -1;
 
 static int clamp_speed(int speed) {
   if (speed < 0) return 0;
@@ -30,15 +30,14 @@ static void write_motor(int in1, int in2, int pwm_pin, int dir, int speed) {
   analogWrite(pwm_pin, pwm);
 }
 
-static void apply_targets(int a_speed, int a_dir) {
-  int a_pwm = clamp_speed(a_speed);
+static void apply_targets(int c_speed, int a_dir) {
+  int c_pwm = clamp_speed(c_speed);
   int a_direction = (a_dir > 0) ? 1 : (a_dir < 0 ? -1 : 0);
+  int c_direction = (c_pwm == 0) ? 0 : MOTOR_C_DIR;
 
-  int b_pwm = clamp_speed(static_cast<int>(a_pwm * B_SPEED_SCALE + 0.5f));
+  int a_pwm = clamp_speed(static_cast<int>(c_pwm * A_SPEED_SCALE + 0.5f));
+  int b_pwm = clamp_speed(static_cast<int>(c_pwm * B_SPEED_SCALE + 0.5f));
   int b_direction = (a_direction == 0) ? 0 : a_direction;
-
-  int c_pwm = clamp_speed(static_cast<int>(a_pwm * C_SPEED_SCALE + 0.5f));
-  int c_direction = (c_pwm == 0) ? 0 : -1;
 
   write_motor(MOTOR_AIN1, MOTOR_AIN2, MOTOR_APWM, a_direction, a_pwm);
   write_motor(MOTOR_BIN1, MOTOR_BIN2, MOTOR_BPWM, b_direction, b_pwm);
@@ -60,12 +59,12 @@ void motor_setup() {
   analogWriteResolution(MOTOR_BPWM, MOTOR_PWM_RES_BITS);
   analogWriteResolution(MOTOR_CPWM, MOTOR_PWM_RES_BITS);
 
-  apply_targets(DEFAULT_A_SPEED, g_a_dir);
+  apply_targets(DEFAULT_C_SPEED, g_a_dir);
 
   char msg[180] = {0};
   snprintf(msg,
            sizeof(msg),
-           "A(%d,%d,%d) B(%d,%d,%d) C(%d,%d,%d) defA=%d bScale=%.2f cScale=%.2f",
+           "A(%d,%d,%d) B(%d,%d,%d) C(%d,%d,%d) defC=%d aScale=%.2f bScale=%.2f",
            MOTOR_AIN1,
            MOTOR_AIN2,
            MOTOR_APWM,
@@ -75,14 +74,14 @@ void motor_setup() {
            MOTOR_CIN1,
            MOTOR_CIN2,
            MOTOR_CPWM,
-           DEFAULT_A_SPEED,
-           static_cast<double>(B_SPEED_SCALE),
-           static_cast<double>(C_SPEED_SCALE));
+           DEFAULT_C_SPEED,
+           static_cast<double>(A_SPEED_SCALE),
+           static_cast<double>(B_SPEED_SCALE));
   logger_event("motor_boot", msg);
 }
 
 void motor_loop() {
-  apply_targets(DEFAULT_A_SPEED, g_a_dir);
+  apply_targets(DEFAULT_C_SPEED, g_a_dir);
 }
 
 void motor_set_a_dir(int a_dir) {

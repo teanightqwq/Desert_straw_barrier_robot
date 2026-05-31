@@ -24,10 +24,10 @@ loader 传感器引脚因电机接线冲突暂时禁用。
 
 | 传感器 | 角色 | 引脚 |
 |---|---|---|
-| loader_1 | Loader 传感器 | TBD |
-| loader_2 | Loader 传感器 | TBD |
-| loader_3 | Loader 传感器 | TBD |
-| loader_4 | Loader 传感器 | TBD |
+| loader_1 | Loader 传感器（TOF，Route A 不用） | -1 |
+| loader_2 | Loader 传感器（IR1 AO） | GPIO20 |
+| loader_3 | Loader 传感器（IR2 AO） | GPIO0 |
+| loader_4 | Loader 传感器（TOF，Route A 不用） | -1 |
 | wedger_sensor | Feeder-to-wedger 检测传感器 | TBD |
 
 ## 送料电机控制（motor）

@@ -1,11 +1,11 @@
 # TODO
 
 ## Hardware Mapping
-- [ ] Resolve loader sensor pins after motor wiring (GPIO10/11 conflict)
-- [ ] Fill loader_1 pin in sensor.cpp
-- [ ] Fill loader_2 pin in sensor.cpp
-- [ ] Fill loader_3 pin in sensor.cpp
-- [ ] Fill loader_4 pin in sensor.cpp
+- [x] Resolve loader sensor pins after motor wiring (GPIO10/11 conflict)
+- [] Fill loader_1 pin in sensor.h
+- [x] Fill loader_2 pin in sensor.h
+- [x] Fill loader_3 pin in sensor.h
+- [] Fill loader_4 pin in sensor.h
 - [ ] Fill wedger_sensor pin in sensor.cpp
 - [ ] Define wheels H-bridge pin mapping in wheels.h
 - [ ] Confirm active/passive wheel placement (front/rear or left/right)
@@ -28,6 +28,7 @@
 - [x] Add basic PWM motor driver (A/B/C) with LEDC
 - [x] Integrate motor setup/loop in bake.ino
 - [x] Add start-compatible direction flip for Motor A
+- [x] Set motor C as master speed; A/B follow 0.8x
 
 ## Warning System Work
 - [x] Formalize `WarnStatus` struct in `warning.h` (type, mainType, severity, prevWorkStatus, startMs, lastLogMs, message, active)

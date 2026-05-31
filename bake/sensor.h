@@ -5,13 +5,19 @@
 #include "warning.h"
 
 // Loader sensor count and GPIO mapping.
-// TODO: update loader sensor GPIO after motor wiring finalized.
 constexpr size_t LOADER_SENSOR_COUNT = 4;
 
+// loader_1 = TOF (not used in Route A)
 constexpr int LOADER_PIN_1 = -1;
-constexpr int LOADER_PIN_2 = -1;
-constexpr int LOADER_PIN_3 = -1; // TBD
-constexpr int LOADER_PIN_4 = -1; // TBD
+
+// loader_2 = IR1 AO (GPIO20)
+constexpr int LOADER_PIN_2 = 20;
+
+// loader_3 = IR2 AO (GPIO0)
+constexpr int LOADER_PIN_3 = 0;
+
+// loader_4 = TOF (not used in Route A)
+constexpr int LOADER_PIN_4 = -1;
 
 // 5th sensor between feeder and wedger.
 constexpr int WEDGER_SENSOR_PIN = -1; // TBD

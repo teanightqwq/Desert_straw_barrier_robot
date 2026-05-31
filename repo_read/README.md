@@ -24,10 +24,10 @@ Loader sensor pins are temporarily disabled due to motor wiring conflicts.
 
 | Sensor | Role | Pin |
 |---|---|---|
-| loader_1 | Loader sensor | TBD |
-| loader_2 | Loader sensor | TBD |
-| loader_3 | Loader sensor | TBD |
-| loader_4 | Loader sensor | TBD |
+| loader_1 | Loader sensor (TOF, Route A unused) | -1 |
+| loader_2 | Loader sensor (IR1 AO) | GPIO20 |
+| loader_3 | Loader sensor (IR2 AO) | GPIO0 |
+| loader_4 | Loader sensor (TOF, Route A unused) | -1 |
 | wedger_sensor | Feeder-to-wedger check sensor | TBD |
 
 ## Motor Control (feeder)
@@ -147,5 +147,4 @@ Edit these constants in sensor.h (Runtime Config section) for your test bench:
 - T_GAP_HOLD / T_END_DETECT_HOLD / T_FEED_PROCESS / T_S5_CONFIRM_HOLD
 
 ## Notes
-- With only loader_1 configured today, coverage-based logic is partial by design.
 - Once all pins are known, set them directly in sensor.h and rerun tests.

@@ -26,9 +26,10 @@ constexpr int MOTOR_PWM_CH_B = 1;
 constexpr int MOTOR_PWM_CH_C = 2;
 
 // Speed config (0..MOTOR_PWM_MAX)
-constexpr int DEFAULT_A_SPEED = MOTOR_PWM_MAX;
-constexpr float B_SPEED_SCALE = 1.0f;
-constexpr float C_SPEED_SCALE = 1.0f;
+constexpr int DEFAULT_C_SPEED = MOTOR_PWM_MAX;
+constexpr float A_SPEED_SCALE = 0.4f;
+constexpr float B_SPEED_SCALE = 0.4f;
+constexpr int MOTOR_C_DIR = -1;
 
 void motor_setup();
 void motor_loop();
